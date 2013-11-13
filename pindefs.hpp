@@ -32,8 +32,8 @@ GPIO__OUTPUT(_mmEnable, 0, 0);
 typedef xpcc::gpio::Invert<_mmEnable> mmEnable;
 
 //photodiode inputs
-GPIO__INPUT(photoDiode1, 0, 9);
-GPIO__INPUT(photoDiode2, 0, 8);
+GPIO__INPUT(photoDiode2, 0, 9);
+GPIO__INPUT(photoDiode1, 0, 8);
 
 //stepper motor outputs
 GPIO__OUTPUT(stepper1, 2, 5);

@@ -21,7 +21,7 @@
 using namespace xpcc;
 using namespace xpcc::lpc17;
 
-const char fwversion[16] __attribute__((used, section(".fwversion"))) = "v0.1";
+const char fwversion[16] __attribute__((used, section(".fwversion"))) = "LSE v0.1";
 
 #include "pindefs.hpp"
 #include "mirror_motor.hpp"
@@ -158,6 +158,136 @@ MirrorMotor mirrorMotor;
 LaserModule laser;
 
 
+class Controller : TickerTask {
+public:
+
+	Controller() {
+		end = false;
+
+	}
+
+	bool started = false;
+	bool configured = false;
+
+	Timeout<> configurationTimeout;
+
+	void handleTick() {
+		if(!mirrorMotor.isLocked()) {
+			laser.enable(false);
+			configured = false;
+		}
+
+		if(mirrorMotor.isLocked() && started && !configured) {
+			XPCC_LOG_DEBUG .printf("configured\n");
+			configured = true;
+
+			configurationTimeout.restart(1000);
+			laser.enable(true);
+
+			Timer0::intOnMatch(0, false);
+			GpioInterrupt::enableInterrupt(photoDiode1::Port, photoDiode1::Pin);
+		}
+	}
+
+	void start() {
+		Timer0::intOnMatch(0, false);
+
+		mirrorMotor.setClk(1000);
+		mirrorMotor.enable(true);
+
+		started = true;
+		configured = false;
+
+		laser.setOutput(70);
+		laser.enable(false);
+
+		GpioInterrupt::enableGlobalInterrupts();
+
+	}
+
+	void endDetectInt() {
+		//XPCC_LOG_DEBUG .printf("end\n");
+
+		laser.enable(false);
+
+		delay_us(10);
+		count = 0;
+		Timer0::intOnMatch(0, true);
+	}
+
+	void timerInt() {
+		//XPCC_LOG_DEBUG .printf("timer\n");
+		Timer0::intOnMatch(0, false);
+
+		for(int i = 0; i < 8; i++) {
+			laser.enable(true);
+			delay_us(1);
+			laser.enable(false);
+			delay_us(1);
+		}
+
+		delay_us(500);
+		laser.enable(true);
+
+		for(int i = 0; i < 8; i++) {
+			laser.enable(true);
+			delay_us(1);
+			laser.enable(false);
+			delay_us(1);
+		}
+		laser.enable(true);
+
+//
+//		if(count > 10)
+//			laser.enable(true);
+
+//		if(count > 11)
+//			count = 0;
+
+
+//		if(count >= 10) {
+//			for(int i = 0; i < 8; i++) {
+//				laser.enable(true);
+//				delay_us(1);
+//				laser.enable(false);
+//				delay_us(1);
+//			}
+//
+//			for(int i = 0; i < 8; i++) {
+//				laser.enable(true);
+//				delay_us(10);
+//				laser.enable(false);
+//				delay_us(10);
+//			}
+//			count = 0;
+//		}
+
+//		Timer0::intOnMatch(0, false);
+//		if(end) {
+//			end = false;
+//
+//
+//			for(int i = 0; i < 8; i++) {
+//				laser.enable(true);
+//				delay_us(100);
+//				laser.enable(false);
+//				delay_us(100);
+//			}
+//
+//			laser.enable(true);
+//			GpioInterrupt::enableInterrupt(photoDiode1::Port, photoDiode1::Pin);
+////			laser.enable(false);
+////			delay_us(500);
+////			laser.enable(true);
+//		}
+	}
+
+	volatile uint8_t count;
+	volatile bool end;
+};
+
+Controller controller;
+
 
 //xpcc::USBCDCMSD<TestMSD> device(0xffff, 2010, 0);
 //USBMSD<TestMSD> device;
@@ -205,11 +335,8 @@ protected:
 
 		if(cmp(argv[0], "start")) {
 
-			mirrorMotor.setClk(1000);
-			mirrorMotor.enable(true);
+			controller.start();
 
-			laser.setOutput(70);
-			laser.enable(true);
 
 		}
 
@@ -221,18 +348,20 @@ MyTerminal terminal(uart);
 
 
 extern "C"
-void TIMER0_IRQHandler() {
-	Timer0::clearIntPending(Timer0::IntType::TIM_MR0_INT);
+void EINT3_IRQHandler() {
 
-	for(int i = 0; i < 16; i++) {
-		laser.enable(true);
-		delay_us(1);
-		laser.enable(false);
-		delay_us(1);
+	if (GpioInterrupt::checkInterrupt(EINT3_IRQn, photoDiode1::Port,
+			photoDiode1::Pin, IntEvent::RISING_EDGE)) {
+		controller.endDetectInt();
+
 	}
-	//laserEn::toggle();
 
+}
 
+extern "C"
+void TIMER0_IRQHandler() {
+	controller.timerInt();
+	Timer0::clearIntPending(Timer0::IntType::TIM_MR0_INT);
 }
 
 //Tsk test;
@@ -245,6 +374,8 @@ int main() {
 //	Pinsel::setFunc(1, 24, 3); //MOSI
 
 	//LPC_SSP0->CR1 |= 1;
+
+
 
 	lpc17::SysTickTimer::enable();
 	lpc17::SysTickTimer::attachInterrupt(sysTick);

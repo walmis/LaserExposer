@@ -23,7 +23,6 @@ public:
 		Pinsel::setFunc(1, 28, 3);
 
 		lpc17::Timer0::enableTimer(1);
-
 		NVIC_EnableIRQ(TIMER0_IRQn);
 	}
 
@@ -36,17 +35,17 @@ public:
 		int pr = SystemCoreClock/ 2 / frequency;
 
 		lpc17::Timer0::configureMatch(0, pr,
-					(Timer0::MatchFlags)(Timer0::MatchFlags::RESET_ON_MATCH |
-					Timer0::MatchFlags::INT_ON_MATCH),
+					Timer0::MatchFlags::RESET_ON_MATCH,
 					Timer0::ExtMatchOpt::TIM_EXTMATCH_TOGGLE);
 
+		//Timer0::intOnMatch(0, true);
 		lpc17::Timer0::resetCounter();
 		lpc17::Timer0::enable();
 
 	}
 
 	bool isLocked() {
-		return mmLock::read();
+		return !mmLock::read();
 	}
 
 
