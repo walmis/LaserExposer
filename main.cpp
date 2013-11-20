@@ -15,6 +15,8 @@
 #include <xpcc/driver/connectivity/usb/USBDevice.hpp>
 #include <xpcc/io/terminal.hpp>
 
+#include <xpcc/driver/motor/linear_metric_stepper.hpp>
+
 #include "mcp415x.hpp"
 #include <new>
 
@@ -27,6 +29,37 @@ const char fwversion[16] __attribute__((used, section(".fwversion"))) = "LSE v0.
 #include "mirror_motor.hpp"
 #include "laser_module.hpp"
 
+
+
+
+class Stepper : public MetricLinearStepper<stepperOutputs> {
+	typedef MetricLinearStepper<stepperOutputs> Base;
+public:
+	Stepper() : MetricLinearStepper<stepperOutputs>(1.0/23.62) {
+		sw2::setInput();
+		setSpeed(3);
+	}
+
+	void goHome() {
+		move(-10000);
+	}
+
+protected:
+	void handleTick() override {
+		if(!sw2::read()) {
+			if(moveSteps < 0) {
+				stop();
+				resetStepPosition();
+			}
+		}
+
+		this->Base::handleTick();
+	}
+
+};
+
+
+Stepper stepper;
 
 class UARTDevice : public IODevice {
 
@@ -95,7 +128,6 @@ void boot_jump( uint32_t address ){
 
 UARTDevice uart(115200);
 //xpcc::log::Logger xpcc::log::debug(device);
-xpcc::log::Logger xpcc::log::debug(uart);
 
 xpcc::NullIODevice null;
 
@@ -171,19 +203,14 @@ public:
 
 	Controller() {
 
-		sw2::setOutput();
-
 		CLKPwr::setClkPower(CLKPwr::PType::PCRIT, true);
 		CLKPwr::setClkDiv(CLKPwr::ClkType::RIT, CLKPwr::ClkDiv::DIV_1);
 
 		LPC_RIT->RICTRL |= (1<<0) | (1<<1);
 
-		//NVIC_EnableIRQ(RIT_IRQn);
-
 		Timer1::enableTimer(1);
 
 		NVIC_EnableIRQ(TIMER1_IRQn);
-
 	}
 
 	bool started = false;
@@ -345,14 +372,14 @@ public:
 				d >>= 1;
 				dl_start(d);
 
-				sw2::set(enable);
+				//sw2::set(enable);
 				laser.enable(enable);
 
 				dl_wait();
 
 
 			}
-			sw2::reset();
+			//sw2::reset();
 			laser.enable(false);
 		}
 
@@ -383,8 +410,12 @@ Controller controller;
 //xpcc::USBCDCMSD<TestMSD> device(0xffff, 2010, 0);
 //USBMSD<TestMSD> device;
 USBSerial device(0xffff);
+
 xpcc::IOStream stream(device);
 xpcc::log::Logger xpcc::log::info(device);
+
+//xpcc::log::Logger xpcc::log::debug(uart);
+xpcc::log::Logger xpcc::log::debug(device);
 
 class MyTerminal : public Terminal {
 public:
@@ -493,7 +524,26 @@ protected:
 			} else {
 				str.printf("%d\n", 0);
 			}
+		}
+		if(cmp(argv[0], "step")) {
+			if(nargs == 2) {
+				int a = to_int(argv[1]);
+				stepper.move(a);
+			} else {
+				stepper.step(FORWARD);
+			}
+		}
+		if(cmp(argv[0], "stepper") && cmp(argv[1], "speed")) {
+			int a = to_int(argv[2]);
+			stepper.setSpeed(a);
+		}
 
+		if(cmp(argv[0], "stepper") && cmp(argv[1], "move")) {
+			int a = to_int(argv[2]);
+			stepper.setPosition(a);
+		}
+		if(cmp(argv[0], "stepper") && cmp(argv[1], "home")) {
+			stepper.goHome();
 		}
 	}
 
@@ -522,8 +572,6 @@ void EINT3_IRQHandler() {
 
 extern "C"
 void TIMER0_IRQHandler() {
-
-
 	Timer0::clearIntPending(Timer0::IntType::TIM_MR0_INT);
 }
 

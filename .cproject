@@ -73,12 +73,13 @@
 									<listOptionValue builtIn="false" value="-Map=prog.map"/>
 									<listOptionValue builtIn="false" value="-T ../lpc17xx/linkscript.ld"/>
 								</option>
-								<option id="gnu.cpp.link.option.flags.1214636028" name="Linker flags" superClass="gnu.cpp.link.option.flags" value="-mlong-calls -mthumb -mcpu=cortex-m3 --specs=nano.specs  -u DMA_IRQHandler -u default_irq_handler" valueType="string"/>
+								<option id="gnu.cpp.link.option.flags.1214636028" name="Linker flags" superClass="gnu.cpp.link.option.flags" value="-mlong-calls -mthumb -mcpu=cortex-m3 --specs=nano.specs  -u xpccFloat -u default_irq_handler" valueType="string"/>
 								<option id="gnu.cpp.link.option.nostart.1155670417" name="Do not use standard start files (-nostartfiles)" superClass="gnu.cpp.link.option.nostart" value="true" valueType="boolean"/>
 								<option id="gnu.cpp.link.option.nodeflibs.1378737972" name="Do not use default libraries (-nodefaultlibs)" superClass="gnu.cpp.link.option.nodeflibs" value="true" valueType="boolean"/>
 								<option id="gnu.cpp.link.option.nostdlibs.1886830719" name="No startup or default libs (-nostdlib)" superClass="gnu.cpp.link.option.nostdlibs" value="true" valueType="boolean"/>
 								<option id="gnu.cpp.link.option.libs.1971960725" name="Libraries (-l)" superClass="gnu.cpp.link.option.libs" valueType="libs">
 									<listOptionValue builtIn="false" value="xpcc"/>
+									<listOptionValue builtIn="false" value="m"/>
 									<listOptionValue builtIn="false" value="stdc++"/>
 									<listOptionValue builtIn="false" value="gcc"/>
 									<listOptionValue builtIn="false" value="c"/>

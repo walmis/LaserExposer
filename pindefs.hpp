@@ -44,5 +44,6 @@ GPIO__OUTPUT(stepper2, 2, 3);
 GPIO__OUTPUT(stepper3, 2, 2);
 GPIO__OUTPUT(stepper4, 2, 4);
 
+typedef gpio::Nibble<stepper3, stepper1, stepper2, stepper4> stepperOutputs;
 
 #endif /* PINDEFS_HPP_ */
