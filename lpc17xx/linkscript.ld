@@ -154,23 +154,7 @@ SECTIONS
 		*(.fini .fini.*)
 		
 	} >FLASH
-	
 
-	.fastcode :
-	{
-		__fastcode_load = LOADADDR (.fastcode);		/* address in FLASH */
-		__fastcode_start = .;						/* address in RAM */
-		
-		/* used for vectors remapped to RAM */
-		KEEP(*(.vectors))
-		KEEP(*(.fastcode))
-		
-		*(.glue_7t)		/* TODO: are these usefull here or better only in .text? */
-		*(.glue_7)
-		
-		. = ALIGN (4);
-		__fastcode_end = .;
-	} >RAM AT>FLASH
 	
 	/* .ARM.exidx is sorted, so has to go in its own output section.  */
 	__exidx_start = .;

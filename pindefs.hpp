@@ -24,6 +24,9 @@ GPIO__OUTPUT(laserEn, 1, 18);
 //laser dac chip select
 GPIO__OUTPUT(laserCs, 1, 19);
 
+
+GPIO__IO(sw2, 2, 1);
+
 //mirror motor PLL Lock signal
 GPIO__INPUT(mmLock, 1, 29);
 

@@ -143,7 +143,6 @@ void sysTick() {
 
 		NVIC_DeInit();
 
-
 		usbConnPin::setOutput(false);
 		delay_ms(100);
 
@@ -158,45 +157,105 @@ MirrorMotor mirrorMotor;
 LaserModule laser;
 
 
+inline void delay(uint32_t ns) {
+
+	uint32_t t = LPC_RIT->RICOUNTER + (ns-20);
+	while(LPC_RIT->RICOUNTER < t);
+}
+
 class Controller : TickerTask {
 public:
 
+	uint16_t delays[1024];
+	volatile uint16_t numDelays;
+
 	Controller() {
-		end = false;
+
+		sw2::setOutput();
+
+		CLKPwr::setClkPower(CLKPwr::PType::PCRIT, true);
+		CLKPwr::setClkDiv(CLKPwr::ClkType::RIT, CLKPwr::ClkDiv::DIV_1);
+
+		LPC_RIT->RICTRL |= (1<<0) | (1<<1);
+
+		//NVIC_EnableIRQ(RIT_IRQn);
+
+		Timer1::enableTimer(1);
+
+		NVIC_EnableIRQ(TIMER1_IRQn);
 
 	}
 
 	bool started = false;
-	bool configured = false;
+	bool locked = false;
 
-	Timeout<> configurationTimeout;
+	Timeout<> cfgTimeout;
+
+	bool isStable() {
+		return !cfgTimeout.isActive() && locked && started;
+	}
 
 	void handleTick() {
 		if(!mirrorMotor.isLocked()) {
-			laser.enable(false);
-			configured = false;
+			//laser.enable(false);
+			locked = false;
 		}
 
-		if(mirrorMotor.isLocked() && started && !configured) {
+		if(mirrorMotor.isLocked() && started && !locked) {
 			XPCC_LOG_DEBUG .printf("configured\n");
-			configured = true;
+			locked = true;
 
-			configurationTimeout.restart(1000);
+			cfgTimeout.restart(1000);
 			laser.enable(true);
 
-			Timer0::intOnMatch(0, false);
+			Timer1::enableTimer(1);
+			Timer1::enable();
+
+			startTime = 0;
+			scanPeriod = 0;
+			LPC_RIT->RICOUNTER = 0;
+			LPC_RIT->RICOMPVAL = 0xFFFFFFFF;
+
 			GpioInterrupt::enableInterrupt(photoDiode1::Port, photoDiode1::Pin);
+		}
+
+		if(cfgTimeout.isExpired() && cfgTimeout.isActive()) {
+			XPCC_LOG_DEBUG .printf("configure match\n");
+			uint32_t match = ((SystemCoreClock) / 1000000) * (scanPeriod-10);
+
+			Timer1::configureMatch(0,
+					match,
+					(Timer1::MatchFlags)(Timer1::MatchFlags::RESET_ON_MATCH |
+					Timer1::MatchFlags::INT_ON_MATCH));
+
+			cfgTimeout.stop();
+		}
+
+
+		if(!numDelays && cfgTimeout.isExpired()) {
+			//laser.enable(false);
 		}
 	}
 
-	void start() {
-		Timer0::intOnMatch(0, false);
+	void handleInterrupt(int irqn) {
+		if(irqn == TIMER1_IRQn) {
+			laser.enable(true);
+			//sw2::set(true);
 
-		mirrorMotor.setClk(1000);
+
+			Timer1::clearIntPending(Timer1::IntType::TIM_MR0_INT);
+			//sw2::set(false);
+		}
+	}
+
+	void start(int freq = 1000) {
+
+		mirrorMotor.setClk(freq);
 		mirrorMotor.enable(true);
 
 		started = true;
-		configured = false;
+		locked = false;
+
 
 		laser.setOutput(70);
 		laser.enable(false);
@@ -205,85 +264,117 @@ public:
 
 	}
 
+	uint32_t currentDelay;
+
+	void enableGpioInt() {
+		GpioInterrupt::enableInterrupt(photoDiode1::Port, photoDiode1::Pin);
+	}
+
+	void disableGpioInt() {
+		GpioInterrupt::disableInterrupt(photoDiode1::Port, photoDiode1::Pin);
+	}
+
+	void clearGpioInt() {
+		GpioInterrupt::checkInterrupt(EINT3_IRQn, photoDiode1::Port,
+			photoDiode1::Pin, IntEvent::RISING_EDGE);
+	}
+
+
+	void dl_start(uint32_t ticks) {
+
+		LPC_RIT->RICOMPVAL = ticks;
+	}
+
+	void dl_wait() {
+		while(!(LPC_RIT->RICTRL & 1));
+		LPC_RIT->RICTRL |= 1;
+	}
+
+
+	uint32_t startTime;
+	uint32_t scanPeriod;
+
+
 	void endDetectInt() {
-		//XPCC_LOG_DEBUG .printf("end\n");
 
-		laser.enable(false);
+		if(!cfgTimeout.isExpired() && locked) {
+			if(startTime == 0) {
 
-		delay_us(10);
-		count = 0;
-		Timer0::intOnMatch(0, true);
-	}
+				startTime = LPC_RIT->RICOUNTER;
 
-	void timerInt() {
-		//XPCC_LOG_DEBUG .printf("timer\n");
-		Timer0::intOnMatch(0, false);
+			} else {
+				uint32_t time = LPC_RIT->RICOUNTER;
 
-		for(int i = 0; i < 8; i++) {
-			laser.enable(true);
-			delay_us(1);
+				uint32_t diff = time - startTime;
+
+				scanPeriod = diff / (SystemCoreClock/1000000);
+
+				//XPCC_LOG_DEBUG .printf("t %d\n", diff);
+
+				startTime = time;
+
+			}
+
+		} else {
+
+//			for(int i  = 0; i < numDelays; i++) {
+//				XPCC_LOG_DEBUG .printf("delay %d\n", delays[i]>>1);
+//			}
+
+			Timer1::resetCounter();
+
+			while(photoDiode1::read());
+
 			laser.enable(false);
-			delay_us(1);
+
+			LPC_RIT->RICOUNTER = 0;
+			LPC_RIT->RICOMPVAL = 0xFFFFFFFF;
+
+			LPC_RIT->RICTRL |= 1;
+
+			register uint16_t d;
+			register bool enable = 0;
+
+
+
+			//while(*delay) {
+			for(int i = 0; i < numDelays; i++) {
+				d = delays[i];
+
+				enable = d & 1;
+				d >>= 1;
+				dl_start(d);
+
+				sw2::set(enable);
+				laser.enable(enable);
+
+				dl_wait();
+
+
+			}
+			sw2::reset();
+			laser.enable(false);
 		}
 
-		delay_us(500);
-		laser.enable(true);
+		//sw2::set();
+		//delay(5000);
+//		sw2::reset();
 
-		for(int i = 0; i < 8; i++) {
-			laser.enable(true);
-			delay_us(1);
-			laser.enable(false);
-			delay_us(1);
-		}
-		laser.enable(true);
+//		currentDelay = 0;
+//
 
 //
-//		if(count > 10)
-//			laser.enable(true);
-
-//		if(count > 11)
-//			count = 0;
-
-
-//		if(count >= 10) {
-//			for(int i = 0; i < 8; i++) {
-//				laser.enable(true);
-//				delay_us(1);
-//				laser.enable(false);
-//				delay_us(1);
-//			}
+//		LPC_RIT->RICOUNTER = 0;
+//		LPC_RIT->RICOMPVAL = d;
 //
-//			for(int i = 0; i < 8; i++) {
-//				laser.enable(true);
-//				delay_us(10);
-//				laser.enable(false);
-//				delay_us(10);
-//			}
-//			count = 0;
-//		}
+//		disableGpioInt();
 
-//		Timer0::intOnMatch(0, false);
-//		if(end) {
-//			end = false;
-//
-//
-//			for(int i = 0; i < 8; i++) {
-//				laser.enable(true);
-//				delay_us(100);
-//				laser.enable(false);
-//				delay_us(100);
-//			}
-//
-//			laser.enable(true);
-//			GpioInterrupt::enableInterrupt(photoDiode1::Port, photoDiode1::Pin);
-////			laser.enable(false);
-////			delay_us(500);
-////			laser.enable(true);
-//		}
+
+		//sw2::reset();
+
+
 	}
 
-	volatile uint8_t count;
-	volatile bool end;
 };
 
 Controller controller;
@@ -316,6 +407,11 @@ protected:
 			}
 		} else
 
+		if(cmp(argv[0], "period")) {
+			XPCC_LOG_DEBUG .printf("%d\n", controller.scanPeriod);
+
+		} else
+
 		if(cmp(argv[0], "mm")) {
 
 			if(cmp(argv[1], "en")) {
@@ -334,33 +430,100 @@ protected:
 		}
 
 		if(cmp(argv[0], "start")) {
-
-			controller.start();
-
-
+			if(nargs == 2) {
+				int freq = to_int(argv[1]);
+				controller.start(freq);
+			} else {
+				controller.start();
+			}
 		}
 
 	}
 
 };
 
+class CmdTerminal : public Terminal {
+public:
+	CmdTerminal(IODevice& device) : Terminal(device) {};
+
+protected:
+
+	uint16_t readWord() {
+		char a;
+		char b;
+
+		while(!device.read(a));
+		while(!device.read(b));
+
+		return (b << 8) | a;
+	}
+
+	void handleCommand(uint8_t nargs, char* argv[]) {
+		if(cmp(argv[0], "start")) {
+			if(nargs == 2) {
+				int freq = to_int(argv[1]);
+				controller.start(freq);
+			} else {
+				controller.start();
+			}
+		}
+		if(cmp(argv[0], "linedata")) {
+
+			laser.enable(false);
+
+			uint16_t numItems = readWord();
+			//XPCC_LOG_DEBUG .printf("num items %d\n", numItems);
+			controller.numDelays = 0;
+
+			int i;
+			for(i = 0; i < numItems; i++) {
+
+				controller.delays[i] = readWord();
+				//XPCC_LOG_DEBUG .printf("delay[%d] = %d\n", i, controller.delays[i]>>1);
+			}
+			controller.delays[i+1] = 0;
+
+			//XPCC_LOG_DEBUG .printf("finished\n");
+			controller.numDelays = numItems;
+		} else
+		if(cmp(argv[0], "period")) {
+			IOStream str(device);
+			if(controller.isStable()) {
+				str.printf("%d\n", controller.scanPeriod);
+			} else {
+				str.printf("%d\n", 0);
+			}
+
+		}
+	}
+
+};
+
+CmdTerminal cmd(device);
+
 MyTerminal terminal(uart);
 
 
+
 extern "C"
+__attribute__ ((section (".fastcode")))
 void EINT3_IRQHandler() {
 
 	if (GpioInterrupt::checkInterrupt(EINT3_IRQn, photoDiode1::Port,
 			photoDiode1::Pin, IntEvent::RISING_EDGE)) {
 		controller.endDetectInt();
 
+		//clear any interrupts
+		GpioInterrupt::checkInterrupt(EINT3_IRQn, photoDiode1::Port,
+			photoDiode1::Pin, IntEvent::RISING_EDGE);
 	}
 
 }
 
 extern "C"
 void TIMER0_IRQHandler() {
-	controller.timerInt();
+
+
 	Timer0::clearIntPending(Timer0::IntType::TIM_MR0_INT);
 }
 
@@ -376,7 +539,6 @@ int main() {
 	//LPC_SSP0->CR1 |= 1;
 
 
-
 	lpc17::SysTickTimer::enable();
 	lpc17::SysTickTimer::attachInterrupt(sysTick);
 
@@ -385,6 +547,8 @@ int main() {
 	//DMA* inst = DMA::instance();
 
 	NVIC_SetPriority(USB_IRQn, 16);
+	NVIC_SetPriority(EINT3_IRQn, 1);
+	NVIC_SetPriority(RIT_IRQn, 0);
 
 	xpcc::PeriodicTimer<> t(500);
 
