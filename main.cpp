@@ -31,7 +31,6 @@ const char fwversion[16] __attribute__((used, section(".fwversion"))) = "LSE v0.
 
 
 
-
 class Stepper : public MetricLinearStepper<stepperOutputs> {
 	typedef MetricLinearStepper<stepperOutputs> Base;
 public:
@@ -123,10 +122,9 @@ void boot_jump( uint32_t address ){
 
 
 
-
 //xpcc::IOStream stdout(device);
 
-UARTDevice uart(115200);
+UARTDevice uart(460800);
 //xpcc::log::Logger xpcc::log::debug(device);
 
 xpcc::NullIODevice null;
@@ -136,6 +134,16 @@ xpcc::log::Logger xpcc::log::error(null);
 enum { r0, r1, r2, r3, r12, lr, pc, psr};
 
 extern "C" void HardFault_Handler(void)
+{
+  asm volatile("MRS r0, MSP;"
+		       "B Hard_Fault_Handler");
+}
+extern "C" void UsageFault_Handler(void)
+{
+  asm volatile("MRS r0, MSP;"
+		       "B Hard_Fault_Handler");
+}
+extern "C" void BusFault_Handler(void)
 {
   asm volatile("MRS r0, MSP;"
 		       "B Hard_Fault_Handler");
@@ -189,17 +197,67 @@ MirrorMotor mirrorMotor;
 LaserModule laser;
 
 
-inline void delay(uint32_t ns) {
+void expandDelay(uint8_t* buffer, uint16_t length, uint16_t value,
+		uint16_t &byteindex, uint8_t& bitindex) {
 
-	uint32_t t = LPC_RIT->RICOUNTER + (ns-20);
-	while(LPC_RIT->RICOUNTER < t);
+	uint16_t d = value;
+
+	bool laserEn = d & 1;
+	d >>= 1;
+
+	//printf("delay %d\n", d);
+
+	if (bitindex) {
+		for (int8_t bit = (7 - bitindex); bit >= 0; bit--) {
+			if (laserEn)
+				buffer[byteindex] |= (1 << bit);
+			else
+				buffer[byteindex] &= ~(1 << bit);
+
+			bitindex++;
+			//printf("stuff bit %d, byte %d\n", bit, byteindex);
+			d--;
+			if (!d)
+				break;
+		}
+
+		if (bitindex > 7) {
+			byteindex++;
+			bitindex = 0;
+		}
+	}
+
+	int bytes = d / 8;
+	int residue = d & 7;
+	if(bytes) {
+		//XPCC_LOG_DEBUG .printf("ms %d %d\n", byteindex, bytes);
+		if(byteindex + bytes > length) {
+			XPCC_LOG_DEBUG .printf("overflow\n");
+			return;
+		}
+
+		memset(buffer+byteindex, laserEn ? 0xFF : 0x00, bytes);
+	}
+	byteindex += bytes;
+
+	for (int8_t bit = 7; bit >= (8 - residue); bit--) {
+		//printf("bit %d, byte %d\n", bit, byteindex);
+		if (laserEn)
+			buffer[byteindex] |= (1 << bit);
+		else
+			buffer[byteindex] &= ~(1 << bit);
+
+		bitindex++;
+	}
+
 }
 
 class Controller : TickerTask {
 public:
 
-	uint16_t delays[1024];
-	volatile uint16_t numDelays;
+	uint8_t data[10000];
+
+	volatile uint16_t numItems;
 
 	Controller() {
 
@@ -211,6 +269,7 @@ public:
 		Timer1::enableTimer(1);
 
 		NVIC_EnableIRQ(TIMER1_IRQn);
+
 	}
 
 	bool started = false;
@@ -240,8 +299,6 @@ public:
 
 			startTime = 0;
 			scanPeriod = 0;
-			LPC_RIT->RICOUNTER = 0;
-			LPC_RIT->RICOMPVAL = 0xFFFFFFFF;
 
 			GpioInterrupt::enableInterrupt(photoDiode1::Port, photoDiode1::Pin);
 		}
@@ -259,16 +316,20 @@ public:
 		}
 
 
-		if(!numDelays && cfgTimeout.isExpired()) {
+		if(!numItems && cfgTimeout.isExpired()) {
 			//laser.enable(false);
+		}
+
+		if(laser.outputComplete()) {
+
 		}
 	}
 
 	void handleInterrupt(int irqn) {
 		if(irqn == TIMER1_IRQn) {
+			laser.stopOutput();
 			laser.enable(true);
 			//sw2::set(true);
-
 
 			Timer1::clearIntPending(Timer1::IntType::TIM_MR0_INT);
 			//sw2::set(false);
@@ -282,7 +343,6 @@ public:
 
 		started = true;
 		locked = false;
-
 
 		laser.setOutput(70);
 		laser.enable(false);
@@ -307,99 +367,36 @@ public:
 	}
 
 
-	void dl_start(uint32_t ticks) {
-
-		LPC_RIT->RICOMPVAL = ticks;
-	}
-
-	void dl_wait() {
-		while(!(LPC_RIT->RICTRL & 1));
-		LPC_RIT->RICTRL |= 1;
-	}
-
-
 	uint32_t startTime;
 	uint32_t scanPeriod;
-
 
 	void endDetectInt() {
 
 		if(!cfgTimeout.isExpired() && locked) {
 			if(startTime == 0) {
-
 				startTime = LPC_RIT->RICOUNTER;
-
 			} else {
 				uint32_t time = LPC_RIT->RICOUNTER;
-
 				uint32_t diff = time - startTime;
-
 				scanPeriod = diff / (SystemCoreClock/1000000);
-
-				//XPCC_LOG_DEBUG .printf("t %d\n", diff);
-
 				startTime = time;
-
 			}
-
 		} else {
-
-//			for(int i  = 0; i < numDelays; i++) {
-//				XPCC_LOG_DEBUG .printf("delay %d\n", delays[i]>>1);
-//			}
-
+			//prepare DMA transfer
 			Timer1::resetCounter();
 
-			while(photoDiode1::read());
+            if(numItems) {
+            	laser.outputData(data, numItems);
+            }
 
-			laser.enable(false);
+            while(photoDiode1::read());
 
-			LPC_RIT->RICOUNTER = 0;
-			LPC_RIT->RICOMPVAL = 0xFFFFFFFF;
+            if(numItems) {
+            	laser.beginOutput();
+            }
 
-			LPC_RIT->RICTRL |= 1;
-
-			register uint16_t d;
-			register bool enable = 0;
-
-
-
-			//while(*delay) {
-			for(int i = 0; i < numDelays; i++) {
-				d = delays[i];
-
-				enable = d & 1;
-				d >>= 1;
-				dl_start(d);
-
-				//sw2::set(enable);
-				laser.enable(enable);
-
-				dl_wait();
-
-
-			}
-			//sw2::reset();
-			laser.enable(false);
+            laser.enable(false);
 		}
-
-		//sw2::set();
-		//delay(5000);
-//		sw2::reset();
-
-//		currentDelay = 0;
-//
-
-//
-//		LPC_RIT->RICOUNTER = 0;
-//		LPC_RIT->RICOMPVAL = d;
-//
-//		disableGpioInt();
-
-
-		//sw2::reset();
-
-
 	}
 
 };
@@ -415,7 +412,7 @@ xpcc::IOStream stream(device);
 xpcc::log::Logger xpcc::log::info(device);
 
 //xpcc::log::Logger xpcc::log::debug(uart);
-xpcc::log::Logger xpcc::log::debug(device);
+xpcc::log::Logger xpcc::log::debug(uart);
 
 class MyTerminal : public Terminal {
 public:
@@ -435,6 +432,17 @@ protected:
 			}else
 			if(cmp(argv[1], "disable")) {
 				laser.enable(false);
+			}
+			if(cmp(argv[1], "test")) {
+				XPCC_LOG_DEBUG .printf("Test\n");
+
+				memset(controller.data, 0, 10000);
+
+				memset(controller.data, 0xff, 3333);
+				memset(controller.data+3333, 0, 3333);
+				memset(controller.data+3333+3333, 0xff, 3333);
+
+				laser.outputData(controller.data, 10000);
 			}
 		} else
 
@@ -473,6 +481,8 @@ protected:
 
 };
 
+
+
 class CmdTerminal : public Terminal {
 public:
 	CmdTerminal(IODevice& device) : Terminal(device) {};
@@ -480,8 +490,8 @@ public:
 protected:
 
 	uint16_t readWord() {
-		char a;
-		char b;
+		char a = 0;
+		char b = 0;
 
 		while(!device.read(a));
 		while(!device.read(b));
@@ -498,24 +508,63 @@ protected:
 				controller.start();
 			}
 		}
+
+		if(cmp(argv[0], "laser")) {
+			if(cmp(argv[1], "power")) {
+				int power = to_int(argv[2]);
+				XPCC_LOG_DEBUG .printf("Set power %d\n", power);
+				laser.setOutput(power);
+			} else
+			if(cmp(argv[1], "enable")) {
+				laser.enable(true);
+			}else
+			if(cmp(argv[1], "disable")) {
+				laser.enable(false);
+			}
+
+		}
+
 		if(cmp(argv[0], "linedata")) {
 
 			laser.enable(false);
 
 			uint16_t numItems = readWord();
 			//XPCC_LOG_DEBUG .printf("num items %d\n", numItems);
-			controller.numDelays = 0;
+			//controller.numItems = 0;
+
+			uint16_t index = 0;
+			uint8_t bitIndex = 0;
+
+			laser.stopOutput();
+			//controller.numItems = 0;
 
 			int i;
 			for(i = 0; i < numItems; i++) {
+				uint16_t d = readWord();
 
-				controller.delays[i] = readWord();
-				//XPCC_LOG_DEBUG .printf("delay[%d] = %d\n", i, controller.delays[i]>>1);
+				//XPCC_LOG_DEBUG << d << endl;
+				expandDelay(controller.data, 10000, d, index, bitIndex);
+				//XPCC_LOG_DEBUG << "!\n";
+
+				//XPCC_LOG_DEBUG .printf("delay[%d] = %d\n", i, d>>1);
+
 			}
-			controller.delays[i+1] = 0;
+
+			if(bitIndex)
+				index++;
+
+			//XPCC_LOG_DEBUG .printf("expanded %d items\n", index);
+			//XPCC_LOG_DEBUG .printf("buffer %x\n", controller.data);
+			//controller.numItems = index;
+
+			//delay_ms(50);
+
+			//controller.delays[i+1] = 0;
 
 			//XPCC_LOG_DEBUG .printf("finished\n");
-			controller.numDelays = numItems;
+
+			controller.numItems = index;
+
 		} else
 		if(cmp(argv[0], "period")) {
 			IOStream str(device);
@@ -556,7 +605,6 @@ MyTerminal terminal(uart);
 
 
 extern "C"
-__attribute__ ((section (".fastcode")))
 void EINT3_IRQHandler() {
 
 	if (GpioInterrupt::checkInterrupt(EINT3_IRQn, photoDiode1::Port,
@@ -595,7 +643,9 @@ int main() {
 	//DMA* inst = DMA::instance();
 
 	NVIC_SetPriority(USB_IRQn, 16);
-	NVIC_SetPriority(EINT3_IRQn, 1);
+	NVIC_SetPriority(DMA_IRQn, 15);
+
+	NVIC_SetPriority(EINT3_IRQn, 0);
 	NVIC_SetPriority(RIT_IRQn, 0);
 
 	xpcc::PeriodicTimer<> t(500);
@@ -605,5 +655,6 @@ int main() {
 	//msddevice.connect();
 
 	TickerTask::tasksRun();
+	//while(1);
 
 }

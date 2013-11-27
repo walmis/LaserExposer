@@ -19,7 +19,7 @@ GPIO__OUTPUT(ledRed, 0, 25);
 GPIO__OUTPUT(ledGreen, 0, 26);
 
 //turn on laser
-GPIO__OUTPUT(laserEn, 1, 18);
+GPIO__OUTPUT(laserEn, 0, 18);
 
 //laser dac chip select
 GPIO__OUTPUT(laserCs, 1, 19);
