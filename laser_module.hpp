@@ -11,10 +11,18 @@
 
 #include <xpcc/architecture.hpp>
 #include <xpcc/driver/dac/mcp4922.hpp>
+#include <xpcc/driver/connectivity/spi/software_spi.hpp>
 #include "pindefs.hpp"
 
 using namespace xpcc;
 using namespace xpcc::lpc17;
+
+typedef SoftwareSpi<laserSck, laserData, gpio::Unused, 500000> SoftSpi;
+
+enum OpCode {
+	SET_POWER = 0xC5,
+	SET_FOCUS = 0xA5
+};
 
 class LaserModule {
 public:
@@ -22,13 +30,11 @@ public:
 		laserEn::setOutput(0);
 		laserCs::setOutput(1);
 
-		Pinsel::setFunc(1, 20, 3); //sck0
-		Pinsel::setFunc(1, 24, 3); //mosi0
-
+		//Pinsel::setFunc(1, 20, 3); //sck0
+		//Pinsel::setFunc(1, 24, 3); //mosi0
 
 		SpiMaster0::initialize(SpiMaster0::Mode::MODE_3, 24000000);
-
-		dac.initialize();
+		SoftSpi::initialize();
 	}
 
 	inline void disable() {
@@ -69,23 +75,32 @@ public:
 	}
 
 
-	void setOutput(int mA) {
+	void setFocus(int16_t steps) {
+		laserCs::reset();
 
-		//SpiMaster0::initialize(SpiMaster0::Mode::MODE_0, 10000000);
+		SoftSpi::write(SET_FOCUS);
 
-		//XPCC_LOG_DEBUG .printf("Set output\n");
+		SoftSpi::write(steps >> 8);
+		SoftSpi::write(steps & 0xFF);
 
-		if(SpiMaster0::isRunning()) {
-			while(!outputComplete());
-		}
-
-
-		dac.setChannelA( mA* ((680.0f+100.0f)/100.0f)*2, false);
-
+		laserCs::set();
 	}
 
+	void setOutput(int mA) {
+		laserCs::reset();
 
-	Mcp4922<SpiMaster0, laserCs, gpio::Unused> dac;
+		SoftSpi::write(SET_POWER);
+		SoftSpi::write(mA);
+
+		laserCs::set();
+
+//		delay_us(2);
+//
+//		laserCs::reset();
+//		SoftSpi::write(mA);
+//		laserCs::set();
+	}
+
 
 };
 

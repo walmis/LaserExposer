@@ -23,7 +23,6 @@ public:
 		Pinsel::setFunc(1, 28, 3);
 
 		lpc17::Timer0::enableTimer(1);
-		NVIC_EnableIRQ(TIMER0_IRQn);
 	}
 
 	void enable(bool en) {
@@ -47,12 +46,6 @@ public:
 	bool isLocked() {
 		return !mmLock::read();
 	}
-
-
-
 };
-
-
-
 
 #endif /* MIRROR_MOTOR_HPP_ */

@@ -15,50 +15,19 @@
 #include <xpcc/driver/connectivity/usb/USBDevice.hpp>
 #include <xpcc/io/terminal.hpp>
 
-#include <xpcc/driver/motor/linear_metric_stepper.hpp>
+#include <xpcc/driver/motor/stepper_motor.hpp>
 
-#include "mcp415x.hpp"
+#include <math.h>
 #include <new>
 
 using namespace xpcc;
 using namespace xpcc::lpc17;
 
-const char fwversion[16] __attribute__((used, section(".fwversion"))) = "LSE v0.1";
+const char fwversion[16] __attribute__((used, section(".fwversion"))) = "LSE v0.9";
 
 #include "pindefs.hpp"
 #include "mirror_motor.hpp"
 #include "laser_module.hpp"
-
-
-
-class Stepper : public MetricLinearStepper<stepperOutputs> {
-	typedef MetricLinearStepper<stepperOutputs> Base;
-public:
-	Stepper() : MetricLinearStepper<stepperOutputs>(1.0/23.62) {
-		sw2::setInput();
-		setSpeed(3);
-	}
-
-	void goHome() {
-		move(-10000);
-	}
-
-protected:
-	void handleTick() override {
-		if(!sw2::read()) {
-			if(moveSteps < 0) {
-				stop();
-				resetStepPosition();
-			}
-		}
-
-		this->Base::handleTick();
-	}
-
-};
-
-
-Stepper stepper;
 
 class UARTDevice : public IODevice {
 
@@ -114,18 +83,199 @@ public:
 	}
 };
 
+//#define _DEBUG
+#define _SER_DEBUG
+
+UARTDevice uart(460800);
+
+USBSerial device(0xffff);
+xpcc::IOStream stream(device);
+
+#ifdef _DEBUG
+xpcc::log::Logger xpcc::log::info(device);
+xpcc::log::Logger xpcc::log::debug(device);
+#else
+#ifdef _SER_DEBUG
+xpcc::log::Logger xpcc::log::info(uart);
+xpcc::log::Logger xpcc::log::debug(uart);
+#else
+xpcc::log::Logger xpcc::log::info(null);
+xpcc::log::Logger xpcc::log::debug(null);
+#endif
+#endif
+
+
+#define NUM_MSTEPS 48
+
+uint32_t microStepCurve[NUM_MSTEPS];
+
+class Stepper : public StepperMotor<stepperOutputs> {
+	typedef StepperMotor<stepperOutputs> Base;
+public:
+
+
+	class ChannelState {
+	public:
+		ChannelState() {
+			pwm_channel = 0;
+			state = NUM_MSTEPS;
+		}
+
+		void setChannel(uint8_t pwmChannel) {
+			pwm_channel = pwmChannel;
+		}
+
+		void update() {
+			if(state < NUM_MSTEPS) {
+				PWM::matchUpdate(pwm_channel, microStepCurve[state],
+						PWM::UpdateType::PWM_MATCH_UPDATE_NEXT_RST);
+				state++;
+			}
+		}
+
+		void reset() {
+			state = 0;
+		}
+	protected:
+		uint8_t pwm_channel;
+		uint8_t state;
+	};
+
+	ChannelState pwmChannels[4];
+
+	uint8_t state;
+
+	Stepper() {
+		state = 0;
+
+		sw2::setInput();
+
+		PWM::initTimer(1);
+
+		PWM::matchUpdate(0, 1000);
+		PWM::configureMatch(0, PWM::MatchFlags::RESET_ON_MATCH | PWM::MatchFlags::INT_ON_MATCH);
+
+		PWM::matchUpdate(3, 0);
+		PWM::matchUpdate(4, 0);
+		PWM::matchUpdate(5, 0);
+		PWM::matchUpdate(6, 0);
+
+		PWM::channelEnable(3);
+		PWM::channelEnable(4);
+		PWM::channelEnable(5);
+		PWM::channelEnable(6);
+
+		//NVIC_SetPriority(PWM1_IRQn, 1);
+
+
+		pwmChannels[0].setChannel(3);
+		pwmChannels[1].setChannel(4);
+		pwmChannels[2].setChannel(5);
+		pwmChannels[3].setChannel(6);
+
+		Pinsel::setFunc<stepper1A>(1);
+		Pinsel::setFunc<stepper1B>(1);
+		Pinsel::setFunc<stepper2A>(1);
+		Pinsel::setFunc<stepper2B>(1);
+
+
+		PWM::enable();
+
+		//setMode(DriveMode::HALF_STEP);
+		setSpeed(1);
+	}
+
+	void handleInterrupt(int irqn) override {
+		if(irqn == PWM1_IRQn) {
+			//XPCC_LOG_DEBUG .printf("tm\n");
+			for(int i = 0; i < 4; i++) {
+				pwmChannels[i].update();
+			}
+			PWM::clearIntPending(PWM::IntType::PWM_INTSTAT_MR0);
+		}
+	}
+
+	void goHome() {
+		move(-10000);
+	}
+
+	void setSpeed(uint8_t delay) {
+		//XPCC_LOG_DEBUG .printf("speed %d\n", delay);
+		int t = (delay * 1000 * 2) / NUM_MSTEPS;
+
+		int pr = SystemCoreClock / (1000000 / t);
+
+		float power = 0.701335f * expf(-0.0238813f * delay);
+		if(power < 0.5)
+			power = 0.5;
+
+		//XPCC_LOG_DEBUG .printf("%d\n", int(power*100));
+
+		float step = M_PI / (NUM_MSTEPS-1);
+		float pos = 0;
+		for(int i = 0; i < NUM_MSTEPS; i++) {
+			microStepCurve[i] = (uint32_t)(sinf(pos) * pr * power);
+			pos += step;
+		}
+
+		PWM::matchUpdate(0, pr);
+
+		this->Base::setSpeed(delay);
+	}
+
+protected:
+
+	void setOutput(uint8_t bits) override {
+
+		//XPCC_LOG_DEBUG .printf("bits %x\n", bits);
+
+		if(bits == 0) {
+			PWM::matchUpdate(3, 0);
+			PWM::matchUpdate(4, 0);
+			PWM::matchUpdate(5, 0);
+			PWM::matchUpdate(6, 0);
+		}
+
+		if(!(state & 0b0001) && (bits & 0b0001)) {
+			pwmChannels[0].reset();
+		}
+		if(!(state & 0b0010) && (bits & 0b0010)) {
+			pwmChannels[1].reset();
+		}
+		if(!(state & 0b0100) && (bits & 0b0100)) {
+			pwmChannels[2].reset();
+		}
+		if(!(state & 0b1000) && (bits & 0b1000)) {
+			pwmChannels[3].reset();
+		}
+
+		state = bits;
+	}
+
+
+	void handleTick() override {
+
+		if(!sw2::read()) {
+			if(moveSteps < 0) {
+				stop();
+				wait();
+				resetStepPosition();
+			}
+		}
+
+		this->Base::handleTick();
+	}
+
+};
+
+
+Stepper stepper;
 
 void boot_jump( uint32_t address ){
    __asm("LDR SP, [R0]\n"
    "LDR PC, [R0, #4]");
 }
 
-
-
-//xpcc::IOStream stdout(device);
-
-UARTDevice uart(460800);
-//xpcc::log::Logger xpcc::log::debug(device);
 
 xpcc::NullIODevice null;
 
@@ -175,21 +325,20 @@ void Hard_Fault_Handler(uint32_t stack[]) {
 }
 
 void sysTick() {
+
 	LPC_WDT->WDFEED = 0xAA;
 	LPC_WDT->WDFEED = 0x55;
 
-	if(progPin::read() == 0) {
-		//NVIC_SystemReset();
-
-		NVIC_DeInit();
-
-		usbConnPin::setOutput(false);
-		delay_ms(100);
-
-		LPC_WDT->WDFEED = 0x56;
-
-		//boot_jump(0);
-	}
+//	if(progPin::read() == 0) {
+//		//NVIC_SystemReset();
+//
+//		NVIC_DeInit();
+//
+//		usbConnPin::setOutput(false);
+//		delay_ms(100);
+//
+//		LPC_WDT->WDFEED = 0x56;
+//	}
 
 }
 
@@ -254,6 +403,15 @@ void expandDelay(uint8_t* buffer, uint16_t length, uint16_t value,
 
 class Controller : TickerTask {
 public:
+	//number of scans per line
+	uint16_t numScans;
+
+	volatile uint16_t currentScan;
+
+	bool started = false;
+	bool locked = false;
+
+	Timeout<> cfgTimeout;
 
 	uint8_t data[10000];
 
@@ -264,6 +422,9 @@ public:
 		CLKPwr::setClkPower(CLKPwr::PType::PCRIT, true);
 		CLKPwr::setClkDiv(CLKPwr::ClkType::RIT, CLKPwr::ClkDiv::DIV_1);
 
+		numScans = 0;
+		currentScan = 0;
+
 		LPC_RIT->RICTRL |= (1<<0) | (1<<1);
 
 		Timer1::enableTimer(1);
@@ -272,18 +433,13 @@ public:
 
 	}
 
-	bool started = false;
-	bool locked = false;
-
-	Timeout<> cfgTimeout;
-
 	bool isStable() {
 		return !cfgTimeout.isActive() && locked && started;
 	}
 
 	void handleTick() {
 		if(!mirrorMotor.isLocked()) {
-			//laser.enable(false);
+			laser.enable(false);
 			locked = false;
 		}
 
@@ -305,7 +461,7 @@ public:
 
 		if(cfgTimeout.isExpired() && cfgTimeout.isActive()) {
 			XPCC_LOG_DEBUG .printf("configure match\n");
-			uint32_t match = ((SystemCoreClock) / 1000000) * (scanPeriod-10);
+			uint32_t match = ((SystemCoreClock) / 1000000) * (scanPeriod-15);
 
 			Timer1::configureMatch(0,
 					match,
@@ -327,16 +483,16 @@ public:
 
 	void handleInterrupt(int irqn) {
 		if(irqn == TIMER1_IRQn) {
-			laser.stopOutput();
-			laser.enable(true);
-			//sw2::set(true);
+			if(locked) {
+				laser.stopOutput();
+				laser.enable(true);
+			}
 
 			Timer1::clearIntPending(Timer1::IntType::TIM_MR0_INT);
-			//sw2::set(false);
 		}
 	}
 
-	void start(int freq = 1000) {
+	void start(int freq = 500) {
 
 		mirrorMotor.setClk(freq);
 		mirrorMotor.enable(true);
@@ -351,6 +507,28 @@ public:
 
 	}
 
+	void scanLine(uint16_t* data, uint16_t len) {
+
+		uint16_t index = 0;
+		uint8_t bitIndex = 0;
+
+		for(int i = 0; i < len; i++) {
+			expandDelay(this->data, sizeof(this->data), data[i], index, bitIndex);
+		}
+
+		if(bitIndex)
+			index++;
+
+		XPCC_LOG_DEBUG .printf("num %d\n", index);
+		numItems = index;
+		currentScan = 0;
+	}
+
+	void waitScan() {
+		if(numScans == 0) return;
+		while(currentScan < numScans);
+	}
+
 	uint32_t currentDelay;
 
 	void enableGpioInt() {
@@ -363,9 +541,8 @@ public:
 
 	void clearGpioInt() {
 		GpioInterrupt::checkInterrupt(EINT3_IRQn, photoDiode1::Port,
-			photoDiode1::Pin, IntEvent::RISING_EDGE);
+				photoDiode1::Pin, IntEvent::RISING_EDGE);
 	}
-
 
 	uint32_t startTime;
 	uint32_t scanPeriod;
@@ -384,6 +561,17 @@ public:
 		} else {
 			//prepare DMA transfer
 			Timer1::resetCounter();
+
+			if(numScans > 0) {
+				if(currentScan >= numScans) {
+
+					while(photoDiode1::read());
+					laser.enable(false);
+
+					return;
+				}
+			}
+			currentScan++;
 
             if(numItems) {
             	laser.outputData(data, numItems);
@@ -404,60 +592,56 @@ public:
 Controller controller;
 
 
-//xpcc::USBCDCMSD<TestMSD> device(0xffff, 2010, 0);
-//USBMSD<TestMSD> device;
-USBSerial device(0xffff);
-
-xpcc::IOStream stream(device);
-xpcc::log::Logger xpcc::log::info(device);
-
-//xpcc::log::Logger xpcc::log::debug(uart);
-xpcc::log::Logger xpcc::log::debug(uart);
-
-class MyTerminal : public Terminal {
+class CmdTerminal : public Terminal {
 public:
-	MyTerminal(IODevice& device) : Terminal(device) {};
+	CmdTerminal(IODevice& device) : Terminal(device) {
+		autoincrement = false;
+	};
 
 protected:
+	bool autoincrement;
+
+	bool readWord(uint16_t &v) {
+		Timeout<> t(10);
+
+		char a = 0;
+		char b = 0;
+
+		while(!device.read(a) && !t.isExpired());
+		while(!device.read(b) && !t.isExpired());
+
+		if(t.isExpired()) {
+			XPCC_LOG_DEBUG .printf("read timeout\n");
+			return false;
+		}
+
+		v = (b << 8) | a;
+
+		return true;
+	}
+
 	void handleCommand(uint8_t nargs, char* argv[]) {
+//		for(int i = 0; i < nargs; i++) {
+//			XPCC_LOG_DEBUG .printf("%s ", argv[i]);
+//		}
+//		XPCC_LOG_DEBUG .printf("\n");
 
-		if(cmp(argv[0], "laser")) {
-			if(cmp(argv[1], "power")) {
-				int power = to_int(argv[2]);
-				XPCC_LOG_DEBUG .printf("Set power %d\n", power);
-				laser.setOutput(power);
-			} else
-			if(cmp(argv[1], "enable")) {
-				laser.enable(true);
-			}else
-			if(cmp(argv[1], "disable")) {
-				laser.enable(false);
+		if(cmp(argv[0], "start")) {
+			if(nargs == 2) {
+				int freq = to_int(argv[1]);
+				controller.start(freq);
+			} else {
+				controller.start();
 			}
-			if(cmp(argv[1], "test")) {
-				XPCC_LOG_DEBUG .printf("Test\n");
-
-				memset(controller.data, 0, 10000);
-
-				memset(controller.data, 0xff, 3333);
-				memset(controller.data+3333, 0, 3333);
-				memset(controller.data+3333+3333, 0xff, 3333);
-
-				laser.outputData(controller.data, 10000);
-			}
-		} else
-
-		if(cmp(argv[0], "period")) {
-			XPCC_LOG_DEBUG .printf("%d\n", controller.scanPeriod);
-
-		} else
+		}
 
 		if(cmp(argv[0], "mm")) {
 
-			if(cmp(argv[1], "en")) {
+			if(cmp(argv[1], "on")) {
 				XPCC_LOG_DEBUG .printf("Enable\n");
 				mirrorMotor.enable(true);
 			}
-			else if(cmp(argv[1], "dis")) {
+			else if(cmp(argv[1], "off")) {
 				mirrorMotor.enable(false);
 			}
 			if(cmp(argv[1], "freq")) {
@@ -468,141 +652,117 @@ protected:
 
 		}
 
-		if(cmp(argv[0], "start")) {
-			if(nargs == 2) {
-				int freq = to_int(argv[1]);
-				controller.start(freq);
-			} else {
-				controller.start();
-			}
-		}
-
-	}
-
-};
-
-
-
-class CmdTerminal : public Terminal {
-public:
-	CmdTerminal(IODevice& device) : Terminal(device) {};
-
-protected:
-
-	uint16_t readWord() {
-		char a = 0;
-		char b = 0;
-
-		while(!device.read(a));
-		while(!device.read(b));
-
-		return (b << 8) | a;
-	}
-
-	void handleCommand(uint8_t nargs, char* argv[]) {
-		if(cmp(argv[0], "start")) {
-			if(nargs == 2) {
-				int freq = to_int(argv[1]);
-				controller.start(freq);
-			} else {
-				controller.start();
-			}
-		}
-
 		if(cmp(argv[0], "laser")) {
 			if(cmp(argv[1], "power")) {
 				int power = to_int(argv[2]);
 				XPCC_LOG_DEBUG .printf("Set power %d\n", power);
-				laser.setOutput(power);
+				if(power > 0 && power < 200) {
+					laser.setOutput(power);
+				}
 			} else
-			if(cmp(argv[1], "enable")) {
+			if(cmp(argv[1], "on")) {
 				laser.enable(true);
 			}else
-			if(cmp(argv[1], "disable")) {
+			if(cmp(argv[1], "off")) {
 				laser.enable(false);
+			}else
+			if(cmp(argv[1], "focus")) {
+				int steps = to_int(argv[2]);
+				laser.setFocus(steps);
+				XPCC_LOG_DEBUG .printf("focus %d\n", steps);
 			}
-
 		}
+		if(cmp(argv[0], "numscans")) {
+			controller.numScans = to_int(argv[1]);
+		}
+		if(cmp(argv[0], "clear")) {
+			laser.enable(false);
+			laser.stopOutput();
 
+			controller.scanLine(0, 0);
+		}
 		if(cmp(argv[0], "linedata")) {
 
-			laser.enable(false);
+			uint16_t numItems = 0;
+			if(!readWord(numItems)) {
+				return;
+			}
 
-			uint16_t numItems = readWord();
-			//XPCC_LOG_DEBUG .printf("num items %d\n", numItems);
+			if(numItems > 100) {
+				XPCC_LOG_DEBUG .printf("line cnt:%d\n", numItems);
+			}
 			//controller.numItems = 0;
 
-			uint16_t index = 0;
-			uint8_t bitIndex = 0;
+			uint16_t items[numItems];
 
-			laser.stopOutput();
 			//controller.numItems = 0;
 
 			int i;
 			for(i = 0; i < numItems; i++) {
-				uint16_t d = readWord();
-
-				//XPCC_LOG_DEBUG << d << endl;
-				expandDelay(controller.data, 10000, d, index, bitIndex);
-				//XPCC_LOG_DEBUG << "!\n";
-
-				//XPCC_LOG_DEBUG .printf("delay[%d] = %d\n", i, d>>1);
-
+				if(!readWord(items[i])) {
+					return;
+				}
 			}
 
-			if(bitIndex)
-				index++;
+			laser.enable(false);
+			laser.stopOutput();
 
-			//XPCC_LOG_DEBUG .printf("expanded %d items\n", index);
-			//XPCC_LOG_DEBUG .printf("buffer %x\n", controller.data);
-			//controller.numItems = index;
+			controller.waitScan();
+			stepper.wait();
 
-			//delay_ms(50);
+			if(autoincrement) {
+				stepper.move(1);
+			}
 
-			//controller.delays[i+1] = 0;
-
-			//XPCC_LOG_DEBUG .printf("finished\n");
-
-			controller.numItems = index;
+			controller.scanLine(items, numItems);
 
 		} else
 		if(cmp(argv[0], "period")) {
-			IOStream str(device);
 			if(controller.isStable()) {
-				str.printf("%d\n", controller.scanPeriod);
+				stream.printf("%d\n", controller.scanPeriod);
 			} else {
-				str.printf("%d\n", 0);
+				stream.printf("%d\n", 0);
 			}
 		}
-		if(cmp(argv[0], "step")) {
-			if(nargs == 2) {
-				int a = to_int(argv[1]);
-				stepper.move(a);
-			} else {
-				stepper.step(FORWARD);
-			}
+		if(cmp(argv[0], "flash")) {
+			//cause a WD reset
+			LPC_WDT->WDFEED = 0;
+			while(1);
 		}
+		if(cmp(argv[0], "stepper") && cmp(argv[1], "autoinc")) {
+			autoincrement = to_int(argv[2]);
+		} else
 		if(cmp(argv[0], "stepper") && cmp(argv[1], "speed")) {
 			int a = to_int(argv[2]);
 			stepper.setSpeed(a);
-		}
-
+		} else
 		if(cmp(argv[0], "stepper") && cmp(argv[1], "move")) {
 			int a = to_int(argv[2]);
-			stepper.setPosition(a);
-		}
+			stepper.moveTo(a);
+		} else
+		if(cmp(argv[0], "stepper") && cmp(argv[1], "+")) {
+			stepper.move(1);
+		} else
+		if(cmp(argv[0], "stepper") && cmp(argv[1], "-")) {
+			stepper.move(-1);
+		} else
 		if(cmp(argv[0], "stepper") && cmp(argv[1], "home")) {
 			stepper.goHome();
+		}
+		else
+		if(cmp(argv[0], "stepper") && cmp(argv[1], "wait")) {
+			stepper.wait();
+		}
+		else
+		if(cmp(argv[0], "stepper") && cmp(argv[1], "isbusy")) {
+			stream.printf("%d\n", stepper.isBusy());
 		}
 	}
 
 };
 
 CmdTerminal cmd(device);
-
-MyTerminal terminal(uart);
-
-
+CmdTerminal ucmd(uart);
 
 extern "C"
 void EINT3_IRQHandler() {
@@ -618,29 +778,17 @@ void EINT3_IRQHandler() {
 
 }
 
-extern "C"
-void TIMER0_IRQHandler() {
-	Timer0::clearIntPending(Timer0::IntType::TIM_MR0_INT);
-}
-
-//Tsk test;
 
 int main() {
 	//debugIrq = true;
-
-//	SpiMaster0::initialize(SpiMaster0::Mode::MODE_0, 25000000);
-//	Pinsel::setFunc(1, 20, 3); //SCK
-//	Pinsel::setFunc(1, 24, 3); //MOSI
-
-	//LPC_SSP0->CR1 |= 1;
-
+	sw1::setOutput(0);
 
 	lpc17::SysTickTimer::enable();
 	lpc17::SysTickTimer::attachInterrupt(sysTick);
 
 	xpcc::Random::seed();
 
-	//DMA* inst = DMA::instance();
+	stepper.setIdleTimeout(20);
 
 	NVIC_SetPriority(USB_IRQn, 16);
 	NVIC_SetPriority(DMA_IRQn, 15);
@@ -652,9 +800,8 @@ int main() {
 
 	usbConnPin::setOutput(true);
 	device.connect();
-	//msddevice.connect();
+
+	ledRed::setOutput(true);
 
 	TickerTask::tasksRun();
-	//while(1);
-
 }

@@ -22,10 +22,17 @@ GPIO__OUTPUT(ledGreen, 0, 26);
 GPIO__OUTPUT(laserEn, 0, 18);
 
 //laser dac chip select
-GPIO__OUTPUT(laserCs, 1, 19);
+#warning "Broken pin Workaround enabled"
+GPIO__OUTPUT(laserCs, 0, 1);
+GPIO__OUTPUT(laserSck, 0, 10);
+GPIO__OUTPUT(laserData, 0, 11);
 
+//GPIO__OUTPUT(laserCs, 1, 19);
+//GPIO__OUTPUT(laserSck, 1, 20);
+//GPIO__OUTPUT(laserData, 1, 24);
 
 GPIO__IO(sw2, 2, 1);
+GPIO__IO(sw1, 2, 0);
 
 //mirror motor PLL Lock signal
 GPIO__INPUT(mmLock, 1, 29);
@@ -39,11 +46,12 @@ GPIO__INPUT(photoDiode2, 0, 9);
 GPIO__INPUT(photoDiode1, 0, 8);
 
 //stepper motor outputs
-GPIO__OUTPUT(stepper1, 2, 5);
-GPIO__OUTPUT(stepper2, 2, 3);
-GPIO__OUTPUT(stepper3, 2, 2);
-GPIO__OUTPUT(stepper4, 2, 4);
+GPIO__OUTPUT(stepper1A, 2, 5);
+GPIO__OUTPUT(stepper1B, 2, 4);
+GPIO__OUTPUT(stepper2A, 2, 3);
+GPIO__OUTPUT(stepper2B, 2, 2);
 
-typedef gpio::Nibble<stepper3, stepper1, stepper2, stepper4> stepperOutputs;
+
+typedef gpio::Nibble<stepper1A, stepper1B, stepper2A, stepper2B> stepperOutputs;
 
 #endif /* PINDEFS_HPP_ */
