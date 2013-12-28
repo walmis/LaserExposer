@@ -1,3 +1,6 @@
 /Release
 *.o
 *~
+*.pyc
+*.pyo
+.directory
