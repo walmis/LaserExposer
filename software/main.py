@@ -3,7 +3,6 @@ from PySide.QtCore import *
 from PySide.QtGui import *
 import sys
 from math import *
-#import serial
 import struct
 from array import array
 import atexit
@@ -11,31 +10,37 @@ from collections import deque
 from UsbDevice import UsbDevice
 import time
 
-import numpy as np
-
-import matplotlib
-
 from graphics import GfxScene, GfxView
 
-matplotlib.use('Qt4Agg')
-matplotlib.rcParams['backend.qt4']='PySide'
+#from popplerqt4 import Poppler
 
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
+px_mm = 23.62 # pixels per mm at 600 dpi
 
-class MatplotlibWidget(FigureCanvas):
+try:
+  import matplotlib 
+  import numpy as np
 
-    def __init__(self, parent=None,xlabel='x',ylabel='y',title='Title'):
-        super(MatplotlibWidget, self).__init__(Figure())
+  matplotlib.use('Qt4Agg')
+  matplotlib.rcParams['backend.qt4']='PySide'
 
-        self.setParent(parent)
-        self.figure = Figure()
-        self.canvas = FigureCanvas(self.figure)
-        self.axes = self.figure.add_subplot(111)
+  from matplotlib.figure import Figure
+  from matplotlib.backends.backend_qt4agg import FigureCanvasQTAgg as FigureCanvas
 
-        self.axes.set_xlabel(xlabel)
-        self.axes.set_ylabel(ylabel)
-        self.axes.set_title(title)
+  class MatplotlibWidget(FigureCanvas):
+
+      def __init__(self, parent=None,xlabel='x',ylabel='y',title='Title'):
+	  super(MatplotlibWidget, self).__init__(Figure())
+
+	  self.setParent(parent)
+	  self.figure = Figure()
+	  self.canvas = FigureCanvas(self.figure)
+	  self.axes = self.figure.add_subplot(111)
+
+	  self.axes.set_xlabel(xlabel)
+	  self.axes.set_ylabel(ylabel)
+	  self.axes.set_title(title)
+except:
+  print "matplotlib is not available"
 
 
 class Math(QObject):
@@ -84,21 +89,24 @@ class Math(QObject):
   
   
   def updateGraph(self, plot):
-    
-    plot.axes.clear()
-    
-    x = np.arange(0, self.max_pos)
-    
-    y = []
-    for _x in x:
-      y.append(self.tdiff(_x, _x+1))
-    
-    plot.axes.plot(x, y)
-    
-    plot.draw()
-    
-    print self.tdiff(0, self.max_pos)
-    print "sum", np.sum(y)    
+    try:
+      plot.axes.clear()
+      
+      x = np.arange(0, self.max_pos)
+      
+      y = []
+      for _x in x:
+	y.append(self.tdiff(_x, _x+1))
+      
+      plot.axes.plot(x, y)
+      
+      plot.draw()
+      
+      print self.tdiff(0, self.max_pos)
+      print "sum", np.sum(y)    
+      
+    except Exception, e:
+      print e
     
   pos = 0  
   data = array("H")
@@ -163,37 +171,15 @@ class Math(QObject):
     self.add(0.2, True)
     self.add(9.8, False)
     print "error", self.totaleError
-
-    #print sum(self.data)/8
-    
-    #while totalTime < s.scan_period-100:
-      
-      #t = self.tdiff(d, d+(dist-0.5))
-      #totalTime += t
-      
-      #tval = int(round(t/systickPeriod))
-      
-      #tval = tval << 1
-      #data.append(tval)
-	
-      #t = self.tdiff(d+(dist-0.5), d+dist)
-      #totalTime += t
-      
-      #tval = int(round(t/systickPeriod))
-      #print tval
-      #tval = tval << 1;
-      #tval |= 1
-      
-      #data.append(tval)
-      
-      #d += dist
       
     return self.getPattern()
 
 class Device(UsbDevice):
-      
+  period = 0    
   
-  def __init__(self, tty):
+  def __init__(self):
+    import matplotlib
+    
     UsbDevice.__init__(self, 0xffff, 0x2012)
     
     self.interface = 1
@@ -201,26 +187,12 @@ class Device(UsbDevice):
     self.in_endpoint = 0x82
     
     self.open()
-    
-    #self.serial = open(tty, "r+")
-    #self.serial = open("/dev/null", "r+")
-    #self.serial = Device.IOWrapper(self)
-    #self.serial =  serial.Serial(tty, 460800)
-    self.write("\n")
-    #self.serial.flush()
 
-    
-    #self.serial.nonblocking()
-    
-    #self.socket = QSocketNotifier(self.serial.fileno(), QSocketNotifier.Write, parent=self)
-    #self.socket.activated.connect(self._onWriteReady)
+    self.write("\n")
     
     self.scanning = False
-    
-    self.period = 0
+
     self.scansPerLine = 1 
-    
-    #self.startTimer(100)
     
     self.autoPositionIncrement(False)
 
@@ -242,10 +214,6 @@ class Device(UsbDevice):
   
     
   def updatePeriod(self):
-    print "update period"
-    #self.period = 3000
-    #self.periodChanged.emit(self.period) 
-    #return
     self.write("period\n")
     self.period = int(self.read(20, timeout=50))
     if self.period != 0:
@@ -291,7 +259,7 @@ class Device(UsbDevice):
 	proc = imageProcessor(self.image)
 	
 	if self.image.marginTop != 0:
-	  self.device.moveTo(int(23.62 * self.image.marginTop))
+	  self.device.moveTo(int(px_mm * self.image.marginTop))
 	  self.device.wait()
 	else:
 	  self.device.home()
@@ -442,6 +410,15 @@ class Image(QObject, QImage):
     self.marginTop = 0
     
   def load(self, filename):
+    
+    #if filename.endswith(".pdf"):
+      #d = Poppler.Document.load(filename)
+      #page = d.page(0)
+      #image = page.renderToImage(600, 600)
+      #print image
+      #self.swap(image)
+      
+    #else:
     super(Image, self).load(filename)
     
     if self.format() != QImage.Format_Mono:
@@ -474,7 +451,7 @@ class Image(QObject, QImage):
       self.math.add(self.marginLeft, False)
       print "line %d/%d" % (line, self.height())
       
-      dotmm = 1.0/23.62
+      dotmm = 1.0/px_mm
       
       dist = 0.0
       
@@ -524,22 +501,29 @@ class Image(QObject, QImage):
 class App(QApplication):
 	def __init__(self):
 		QApplication.__init__(self, sys.argv)
-		
-	
+
 		loader = QUiLoader()
 		
 		self.window = loader.load("interface.ui")
 		self.window.progressBar.hide()
 		
-		print self.window.facets
-		
 		self.settings = Settings()
 		self.math = Math(self.settings)
-		self.plot = MatplotlibWidget()
+		
+		try:
+		  self.plot = MatplotlibWidget()
+		  self.window.plot.addWidget(self.plot)
+		except:
+		  pass
 		
 		self.settings.changed.connect(self.onSettingsChanged)
 		
-		self.device = Device("/dev/ttyACM0")
+		try:
+		  self.device = Device()
+		except IOError, e:
+		  print e
+		  QMessageBox.warning(self.window, "LaserExposer", "Device not connected")
+		  return
 		
 		self.device.math = self.math
 				
@@ -548,7 +532,6 @@ class App(QApplication):
 		
 		self.image = Image(parent=self)
 
-		
 		self.gfxView = GfxView()
 		
 		self.window.verticalLayout.insertWidget(0, self.gfxView)
@@ -564,9 +547,7 @@ class App(QApplication):
 		self.scene.onLineHover.connect(self.onLineHover)
 		self.scene.scanLineChanged.connect(lambda line: self.window.line.setValue(line))
 		
-		
-		self.window.plot.addWidget(self.plot)
-		
+	
 		self.device.start(self.settings.motor_clk)
 		
 		self.device.periodChanged.connect(lambda x: self.settings.set("scan_period", x))		
@@ -664,6 +645,7 @@ class App(QApplication):
 	  for fmt in QImageReader.supportedImageFormats():
 	    filt += "*.%s " % str(fmt)
 	    
+	  #filt += "*.pdf "  
 	  filt += ")"
 	  dialog.setNameFilter(filt)
 	    
@@ -682,11 +664,11 @@ class App(QApplication):
 	    
 	    self.scene.setImage(self.image)
 	    
-	  self.window.lblWidth.setText("%.2f mm" % (self.image.width()/23.62))
-	  self.window.lblHeight.setText("%.2f mm" % (self.image.height()/23.62))
+	  self.window.lblWidth.setText("%.2f mm" % (self.image.width()/px_mm))
+	  self.window.lblHeight.setText("%.2f mm" % (self.image.height()/px_mm))
 	
 	def onLineHover(self, line):
-	  dotmm = 23.62
+	  dotmm = px_mm
 	  
 	  self.window.lineInfo.setText("> Line: %d (+%.2f mm)" % (line, line/dotmm))
 	
@@ -699,7 +681,7 @@ class App(QApplication):
 	  line = self.image.getLine(d)
 	  
 	  if self.window.goBtn.isChecked():
-	    self.device.moveTo(d + int(round(self.image.marginTop*23.62)))
+	    self.device.moveTo(d + int(round(self.image.marginTop*px_mm)))
 	  
 	  self.device.wait()
 	  #turn off limited exposure

@@ -1,6 +1,8 @@
 from PySide.QtCore import *
 from PySide.QtGui import *
 
+px_mm = 23.62 # pixels per mm at 600 dpi
+
 class GfxScene(QGraphicsScene):
   scanLineChanged = Signal(int)
   onLineHover = Signal(int)
@@ -33,12 +35,12 @@ class GfxScene(QGraphicsScene):
     brush.setStyle(Qt.SolidPattern)
     self.platformOutline.setPen(pen)
     self.platformOutline.setBrush(brush)
-        
+    
+    #TODO: get board dimensions
     maxy_mm = 500
     maxx_mm = 250
     
-    dotmm = 23.62
-    self.platformOutline.setRect(0, 0, int(maxx_mm*dotmm), int(maxy_mm*dotmm))
+    self.platformOutline.setRect(0, 0, int(maxx_mm*px_mm), int(maxy_mm*px_mm))
     self.addItem(self.platformOutline)
     
     pen = QPen()
@@ -75,10 +77,10 @@ class GfxScene(QGraphicsScene):
     self.zoomOnImage()
     
   def onMarginTopChanged(self, margin):
-    self.pixmapItem.setY(23.62 * margin)
+    self.pixmapItem.setY(px_mm * margin)
     
   def onMarginLeftChanged(self, margin):
-    self.pixmapItem.setX(23.62 * margin)
+    self.pixmapItem.setX(px_mm * margin)
     
   def zoomOnImage(self):
     for view in self.views():
@@ -86,18 +88,18 @@ class GfxScene(QGraphicsScene):
       view.scale(0.9, 0.9)
       
   def setActiveLine(self, line):
-    line += 23.62 * self.image.marginTop
-    self.scanLine.setLine(23.62*self.image.marginLeft, line, 23.62*self.image.marginLeft + self.image.width(), line)
-    self.onLineHover.emit(line - int(23.62 * self.image.marginTop))
+    line += px_mm * self.image.marginTop
+    self.scanLine.setLine(px_mm*self.image.marginLeft, line, px_mm*self.image.marginLeft + self.image.width(), line)
+    self.onLineHover.emit(line - int(px_mm * self.image.marginTop))
     
   def setPreviewLine(self, line):
     #print "line", line
-    #line += 23.62 * self.image.marginTop
-    self.previewLine.setLine(23.62*self.image.marginLeft, int(line), 23.62*self.image.marginLeft + self.image.width(), int(line))
-    self.onLineHover.emit(line - int(23.62 * self.image.marginTop))
+    #line += px_mm * self.image.marginTop
+    self.previewLine.setLine(px_mm*self.image.marginLeft, int(line), px_mm*self.image.marginLeft + self.image.width(), int(line))
+    self.onLineHover.emit(line - int(px_mm * self.image.marginTop))
     
   def onScanLineSelected(self, line):
-    self.scanLineChanged.emit(self.previewLine.line().y1() - int(23.62 * self.image.marginTop))
+    self.scanLineChanged.emit(self.previewLine.line().y1() - int(px_mm * self.image.marginTop))
     
   def mouseMoveEvent(self, event):
     pos = event.lastScenePos()
@@ -111,7 +113,7 @@ class GfxScene(QGraphicsScene):
     
     painter.fillRect(rect, Qt.white)
     
-    dotmm = 23.62 # pixels per mm at 600 dpi
+    dotmm = px_mm 
     
     pen.setWidth(1);
     pen.setColor(QColor(170,170,170)) 

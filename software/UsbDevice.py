@@ -49,8 +49,7 @@ class UsbDevice(QObject):
 		dev = usb.core.find(idVendor=self.vendor, idProduct=self.product)
 		
 		if dev is None:
-			print "Device not found"
-			raise Exception("Device not found")
+			raise IOError("Device not found")
 			
 		try:
 			if dev.is_kernel_driver_active(1):
