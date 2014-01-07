@@ -10,6 +10,8 @@ from collections import deque
 from UsbDevice import UsbDevice
 import time
 
+from pdfrender import renderPdf
+
 from graphics import GfxScene, GfxView
 
 #from popplerqt4 import Poppler
@@ -178,8 +180,6 @@ class Device(UsbDevice):
   period = 0    
   
   def __init__(self):
-    import matplotlib
-    
     UsbDevice.__init__(self, 0xffff, 0x2012)
     
     self.interface = 1
@@ -411,15 +411,56 @@ class Image(QObject, QImage):
     
   def load(self, filename):
     
-    #if filename.endswith(".pdf"):
-      #d = Poppler.Document.load(filename)
-      #page = d.page(0)
-      #image = page.renderToImage(600, 600)
-      #print image
-      #self.swap(image)
+    if filename.endswith(".pdf"):
       
-    #else:
-    super(Image, self).load(filename)
+      class PdfDialog(QDialog):
+	def __init__(self):
+	  QDialog.__init__(self)
+
+	  self.setWindowTitle("PDF Render")
+	  self.setSizeGripEnabled(False)
+	  
+	  self.crop = QCheckBox()
+	  self.page = QSpinBox()
+	  form = QFormLayout(self)
+	  form.addRow(QLabel("PDF Render"))
+	  form.addRow(QLabel("Render page:"), self.page)
+	  form.addRow("Crop to image:", self.crop)
+	  
+	  self.btn = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=self)
+	  self.btn.accepted.connect(self.accept)
+	  self.btn.rejected.connect(self.reject)
+	  form.addRow(self.btn)
+	  
+	def getPage(self):
+	  return self.page.value()
+	  
+	def getCrop(self):
+	  return self.crop.isChecked()
+	  
+      
+      dialog = PdfDialog()
+      
+      if dialog.exec_():
+	try:
+	  pdfimg = renderPdf(str(filename), dialog.getPage(), 600, 600)
+	except Exception, e:
+	  msg = QMessageBox.critical(dialog, "Import error", str(e))
+	  return
+
+	img = QImage(pdfimg.data(), pdfimg.width(), pdfimg.height(), QImage.Format_ARGB32)
+	
+	if dialog.getCrop():
+	  (x, y, width, height) = pdfimg.getCropBounds()
+	  
+	  img = img.copy(x, y, width, height)
+	  self.swap(img)
+	  
+	else:
+	  self.swap(img)
+      
+    else:
+      super(Image, self).load(filename)
     
     if self.format() != QImage.Format_Mono:
       print "Image is not 1bit, converting"
@@ -644,8 +685,13 @@ class App(QApplication):
 	  
 	  for fmt in QImageReader.supportedImageFormats():
 	    filt += "*.%s " % str(fmt)
-	    
-	  #filt += "*.pdf "  
+	  
+	  try:
+	    if renderPdf:
+	      filt += "*.pdf "  
+	  except NameError:
+	    pass
+	  
 	  filt += ")"
 	  dialog.setNameFilter(filt)
 	    
@@ -710,6 +756,11 @@ class App(QApplication):
 	  self.window.maxPos.setText("%.2f mm" % self.math.max_pos)
 	  self.window.minPos.setText("%.2f mm" % self.math.min_pos)
 	  
-	  self.math.updateGraph(self.plot)
+	  self.onTestPattern()
+	  
+	  try:
+	    self.math.updateGraph(self.plot)
+	  except:
+	    pass
 		
 app = App()
