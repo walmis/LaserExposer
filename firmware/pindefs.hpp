@@ -32,7 +32,7 @@ GPIO__OUTPUT(laserData, 0, 11);
 //GPIO__OUTPUT(laserData, 1, 24);
 
 GPIO__IO(sw2, 2, 1);
-GPIO__IO(sw1, 2, 0);
+GPIO__IO(dbgPin, 2, 0);
 
 //mirror motor PLL Lock signal
 GPIO__INPUT(mmLock, 1, 29);
@@ -42,8 +42,8 @@ GPIO__OUTPUT(_mmEnable, 0, 0);
 typedef xpcc::gpio::Invert<_mmEnable> mmEnable;
 
 //photodiode inputs
-GPIO__INPUT(photoDiode2, 0, 9);
-GPIO__INPUT(photoDiode1, 0, 8);
+GPIO__INPUT(photoDiode1, 0, 9);
+GPIO__OUTPUT(photoDiode2, 0, 8);
 
 //stepper motor outputs
 GPIO__OUTPUT(stepper1A, 2, 5);
