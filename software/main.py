@@ -120,15 +120,20 @@ class Math(QObject):
     
   def add(self, move, laser):
     
-    singlePeriod = 41.67/1000
+    singlePeriod = 62.5/1000
    
     t = self.tdiff(self.pos, self.pos+move)
     
     p = t/singlePeriod
     
-    self.totaleError += (p - round(p))
+    if p > 2**15:
+      self.totaleError += (p - round(p))
+      self.data.append( (int(round(p / 2)) << 1) | (int(laser) & 1) )
+      self.data.append( (int(round(p / 2)) << 1) | (int(laser) & 1) )
+    else:
     
-    self.data.append( (int(round(p)) << 1) | (int(laser) & 1) )
+      self.totaleError += (p - round(p))
+      self.data.append( (int(round(p)) << 1) | (int(laser) & 1) )
     
     self.pos += move
 
