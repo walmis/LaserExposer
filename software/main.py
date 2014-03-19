@@ -270,7 +270,7 @@ class Device(UsbDevice):
 	  self.device.home()
 	  self.device.wait()
 
-	speed = int((self.device.scansPerLine * (self.device.period/1000)))
+	speed = int((self.device.scansPerLine * (self.device.period/1000))*0.9)
 	if speed < 2:
 	  speed = 2
 	self.device.setStepSpeed(speed)
@@ -347,6 +347,9 @@ class Device(UsbDevice):
     print "Scans/Line", value
     self.scansPerLine = value
     self.write("numscans %d\n" % value)
+    
+  def getScansPerLine(self):
+    return self.scansPerLine
     
   def timerEvent(self, arg):
     if self.period == 0:
@@ -721,8 +724,16 @@ class App(QApplication):
 	def onLineHover(self, line):
 	  dotmm = px_mm
 	  
-	  self.window.lineInfo.setText("> Line: %d (+%.2f mm)" % (line, line/dotmm))
-	
+	  print line
+	  if self.device.isScanning():
+
+	    linesLeft = self.image.height() - line
+	    timeLeft = linesLeft * self.device.period/1000000.0 * self.device.getScansPerLine()
+	    
+	    m, s = divmod(timeLeft, 60)
+	    self.window.lineInfo.setText("> Line: %d (+%.2f mm) ETA: %02dm %02ds" % (line, line/dotmm, m, s))
+	  else:
+	    self.window.lineInfo.setText("> Line: %d (+%.2f mm)" % (line, line/dotmm))
 		
 	def onLine(self, d):
 	  print "line", d
