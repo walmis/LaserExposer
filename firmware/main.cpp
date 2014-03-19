@@ -11,6 +11,7 @@
 #include <xpcc/architecture.hpp>
 #include <xpcc/processing.hpp>
 #include <xpcc/debug.hpp>
+#include <xpcc/math/filter.hpp>
 
 #include <xpcc/driver/connectivity/usb/USBDevice.hpp>
 #include <xpcc/io/terminal.hpp>
@@ -206,10 +207,9 @@ public:
 		int pr = SystemCoreClock / (1000000 / t);
 
 		float power = 0.701335f * expf(-0.0238813f * delay);
-		if(power < 0.5)
-			power = 0.5;
-
-		//XPCC_LOG_DEBUG .printf("%d\n", int(power*100));
+		//XPCC_LOG_DEBUG .printf("power %d\n", int(power*100));
+		if(power < 0.3)
+			power = 0.3;
 
 		float step = M_PI / (NUM_MSTEPS-1);
 		float pos = 0;
@@ -430,7 +430,6 @@ public:
 		Timer1::enableTimer(1);
 
 		NVIC_EnableIRQ(TIMER1_IRQn);
-
 	}
 
 	bool isStable() {
@@ -444,30 +443,30 @@ public:
 		}
 
 		if(mirrorMotor.isLocked() && started && !locked) {
-			XPCC_LOG_DEBUG .printf("configured\n");
+			XPCC_LOG_DEBUG .printf("PLL Locked, calibrating\n");
 			locked = true;
 
 			cfgTimeout.restart(1000);
 			laser.enable(true);
 
-			Timer1::enableTimer(1);
-			Timer1::enable();
-
 			startTime = 0;
-			scanPeriod = 0;
 
 			GpioInterrupt::enableInterrupt(photoDiode1::Port, photoDiode1::Pin);
 		}
 
-		if(cfgTimeout.isExpired() && cfgTimeout.isActive()) {
-			XPCC_LOG_DEBUG .printf("configure match\n");
-			uint32_t match = ((SystemCoreClock) / 1000000) * (scanPeriod-15);
+		if(cfgTimeout.isActive() && cfgTimeout.isExpired() && locked) {
+			scanPeriod.update();
+			uint32_t match = ((SystemCoreClock) / 1000000) * (scanPeriod.getValue()-(scanPeriod.getValue()/40));
+
+			XPCC_LOG_DEBUG .printf("Calibrated. scanPeriod:%d\n", scanPeriod.getValue());
+
 
 			Timer1::configureMatch(0,
 					match,
 					(Timer1::MatchFlags)(Timer1::MatchFlags::RESET_ON_MATCH |
 					Timer1::MatchFlags::INT_ON_MATCH));
 
+			Timer1::enable();
 			cfgTimeout.stop();
 		}
 
@@ -484,8 +483,14 @@ public:
 	void handleInterrupt(int irqn) {
 		if(irqn == TIMER1_IRQn) {
 			if(locked) {
+				dbgPin::set();
 				laser.stopOutput();
 				laser.enable(true);
+
+	            if(numItems) {
+	            	laser.outputData(data, numItems);
+	            }
+	            dbgPin::reset();
 			}
 
 			Timer1::clearIntPending(Timer1::IntType::TIM_MR0_INT);
@@ -502,9 +507,9 @@ public:
 
 		laser.setOutput(70);
 		laser.enable(false);
+		Timer1::enable(false);
 
 		GpioInterrupt::enableGlobalInterrupts();
-
 	}
 
 	void scanLine(uint16_t* data, uint16_t len) {
@@ -519,7 +524,7 @@ public:
 		if(bitIndex)
 			index++;
 
-		XPCC_LOG_DEBUG .printf("num %d\n", index);
+		//XPCC_LOG_DEBUG .printf("num %d\n", index);
 		numItems = index;
 		currentScan = 0;
 	}
@@ -527,6 +532,14 @@ public:
 	void waitScan() {
 		if(numScans == 0) return;
 		while(currentScan < numScans);
+	}
+
+	bool isBusyScan() {
+		if(numScans == 0) return false;
+		if(currentScan < numScans)
+			return true;
+		else
+			return false;
 	}
 
 	uint32_t currentDelay;
@@ -545,9 +558,14 @@ public:
 	}
 
 	uint32_t startTime;
-	uint32_t scanPeriod;
+	//uint32_t scanPeriod;
+	//uint32_t scanPeriodDelta;
+
+	filter::Median<uint16_t, 7> scanPeriod;
 
 	void endDetectInt() {
+		Timer1::resetCounter();
+		dbgPin::set();
 
 		if(!cfgTimeout.isExpired() && locked) {
 			if(startTime == 0) {
@@ -555,12 +573,19 @@ public:
 			} else {
 				uint32_t time = LPC_RIT->RICOUNTER;
 				uint32_t diff = time - startTime;
-				scanPeriod = diff / (SystemCoreClock/1000000);
+
+				uint32_t newScanPeriod = diff / (SystemCoreClock/1000000);
+
+				//scanPeriodDelta = abs(newScanPeriod - scanPeriod);
+				scanPeriod.append(newScanPeriod);
 				startTime = time;
+
+//				if(scanPeriodDelta < 1) {
+//					cfgTimeout.restart(0);
+//				}
 			}
 		} else {
 			//prepare DMA transfer
-			Timer1::resetCounter();
 
 			if(numScans > 0) {
 				if(currentScan >= numScans) {
@@ -573,29 +598,70 @@ public:
 			}
 			currentScan++;
 
-            if(numItems) {
-            	laser.outputData(data, numItems);
-            }
-
             while(photoDiode1::read());
 
             if(numItems) {
             	laser.beginOutput();
             }
-
             laser.enable(false);
 		}
+		dbgPin::reset();
 	}
-
 };
 
 Controller controller;
 
+template <typename T>
+class Buffer {
+public:
+	Buffer() {
+		alloc = 0;
+		buffer = 0;
+	}
+
+	bool reserve(size_t n_elem) {
+		if(n_elem > alloc) {
+			if(buffer)
+				delete[] buffer;
+
+			buffer = new(std::nothrow) T[n_elem];
+			if(!buffer) {
+				return false;
+			}
+			alloc = n_elem;
+			return true;
+		} else {
+			return true;
+		}
+	}
+
+	T* data() {
+		return buffer;
+	}
+
+	void free() {
+		if(buffer) {
+			delete[] buffer;
+			buffer = 0;
+			alloc = 0;
+		}
+	}
+
+	size_t getSize() {
+		return alloc;
+	}
+
+private:
+	T* buffer;
+	size_t alloc;
+};
 
 class CmdTerminal : public Terminal {
 public:
 	CmdTerminal(IODevice& device) : Terminal(device) {
 		autoincrement = false;
+
+
 	};
 
 protected:
@@ -618,6 +684,55 @@ protected:
 		v = (b << 8) | a;
 
 		return true;
+	}
+
+	Buffer<uint16_t> lineData;
+	bool lineDataLock;
+
+	void onLineData() {
+		static uint32_t delay = 2;
+		static uint32_t stepperDly = 2;
+
+		uint32_t t_start = LPC_RIT->RICOUNTER;
+
+		uint16_t numItems = 0;
+		if(!readWord(numItems)) {
+			return;
+		}
+
+		if(!lineData.reserve(numItems)) {
+			XPCC_LOG_DEBUG .printf("alloc fail!\n");
+			return;
+		}
+
+		uint16_t* data = lineData.data();
+		for(int i = 0; i < numItems; i++) {
+			if(!readWord(data[i])) {
+				return;
+			}
+		}
+
+		laser.enable(false);
+		laser.stopOutput();
+
+		controller.waitScan();
+
+		stepper.wait();
+
+		if(autoincrement) {
+//				if(stepperDly != delay) {
+//					XPCC_LOG_DEBUG .printf("set speed %d\n", delay);
+//					stepper.setSpeed(delay);
+//					_delay_ms(1);
+//					stepperDly = delay;
+//				}
+			stepper.move(1);
+		}
+
+		controller.scanLine(data, numItems);
+
+		delay = (LPC_RIT->RICOUNTER - t_start)*1042/100000/1000;
+		XPCC_LOG_DEBUG .printf("t %d\n", delay);
 	}
 
 	void handleCommand(uint8_t nargs, char* argv[]) {
@@ -649,7 +764,6 @@ protected:
 				XPCC_LOG_DEBUG .printf("Set freq %d\n", speed);
 				mirrorMotor.setClk(speed);
 			}
-
 		}
 
 		if(cmp(argv[0], "laser")) {
@@ -682,44 +796,13 @@ protected:
 			controller.scanLine(0, 0);
 		}
 		if(cmp(argv[0], "linedata")) {
-
-			uint16_t numItems = 0;
-			if(!readWord(numItems)) {
-				return;
-			}
-
-			if(numItems > 100) {
-				XPCC_LOG_DEBUG .printf("line cnt:%d\n", numItems);
-			}
-			//controller.numItems = 0;
-
-			uint16_t items[numItems];
-
-			//controller.numItems = 0;
-
-			int i;
-			for(i = 0; i < numItems; i++) {
-				if(!readWord(items[i])) {
-					return;
-				}
-			}
-
-			laser.enable(false);
-			laser.stopOutput();
-
-			controller.waitScan();
-			stepper.wait();
-
-			if(autoincrement) {
-				stepper.move(1);
-			}
-
-			controller.scanLine(items, numItems);
+			onLineData();
 
 		} else
 		if(cmp(argv[0], "period")) {
+			IOStream stream(this->device);
 			if(controller.isStable()) {
-				stream.printf("%d\n", controller.scanPeriod);
+				stream.printf("%d\n", controller.scanPeriod.getValue());
 			} else {
 				stream.printf("%d\n", 0);
 			}
@@ -781,7 +864,8 @@ void EINT3_IRQHandler() {
 
 int main() {
 	//debugIrq = true;
-	sw1::setOutput(0);
+	dbgPin::setOutput(1);
+	photoDiode2::setOutput(true);
 
 	lpc17::SysTickTimer::enable();
 	lpc17::SysTickTimer::attachInterrupt(sysTick);
@@ -794,7 +878,8 @@ int main() {
 	NVIC_SetPriority(DMA_IRQn, 15);
 
 	NVIC_SetPriority(EINT3_IRQn, 0);
-	NVIC_SetPriority(RIT_IRQn, 0);
+	NVIC_SetPriority(TIMER1_IRQn, 0);
+	//NVIC_SetPriority(RIT_IRQn, 0);
 
 	xpcc::PeriodicTimer<> t(500);
 

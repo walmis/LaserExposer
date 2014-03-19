@@ -33,7 +33,7 @@ public:
 		//Pinsel::setFunc(1, 20, 3); //sck0
 		//Pinsel::setFunc(1, 24, 3); //mosi0
 
-		SpiMaster0::initialize(SpiMaster0::Mode::MODE_3, 24000000);
+		SpiMaster0::initialize(SpiMaster0::Mode::MODE_3, 16000000);
 		SoftSpi::initialize();
 	}
 
