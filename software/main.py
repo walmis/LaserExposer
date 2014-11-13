@@ -10,7 +10,10 @@ from collections import deque
 from UsbDevice import UsbDevice
 import time
 
-from pdfrender import renderPdf
+try:
+  from pdfrender import renderPdf
+except:
+  pass
 
 from graphics import GfxScene, GfxView
 

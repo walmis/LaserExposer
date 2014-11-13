@@ -4,10 +4,6 @@
  *  Created on: Feb 28, 2013
  *      Author: walmis
  */
-#include <lpc17xx_nvic.h>
-#include <lpc17xx_uart.h>
-#include <lpc17xx_pinsel.h>
-
 #include <xpcc/architecture.hpp>
 #include <xpcc/processing.hpp>
 #include <xpcc/debug.hpp>
@@ -24,70 +20,18 @@
 using namespace xpcc;
 using namespace xpcc::lpc17;
 
-const char fwversion[16] __attribute__((used, section(".fwversion"))) = "LSE v0.9";
+const char fwversion[16] __attribute__((used, section(".fwversion"))) = "LSE v0.91";
 
 #include "pindefs.hpp"
 #include "mirror_motor.hpp"
 #include "laser_module.hpp"
 
-class UARTDevice : public IODevice {
-
-public:
-	UARTDevice(int baud) {
-
-		UART_CFG_Type cfg;
-		UART_FIFO_CFG_Type fifo_cfg;
-
-		UART_ConfigStructInit(&cfg);
-		cfg.Baud_rate = baud;
-
-		UART_Init(LPC_UART0, &cfg);
-
-		PINSEL_CFG_Type PinCfg;
-
-		PinCfg.Funcnum = 1;
-		PinCfg.OpenDrain = 0;
-		PinCfg.Pinmode = 0;
-		PinCfg.Pinnum = 2;
-		PinCfg.Portnum = 0;
-		PINSEL_ConfigPin(&PinCfg);
-		PinCfg.Pinnum = 3;
-		PINSEL_ConfigPin(&PinCfg);
-
-		UART_Init(LPC_UART0, &cfg);
-
-		UART_FIFOConfigStructInit(&fifo_cfg);
-
-		UART_FIFOConfig(LPC_UART0, &fifo_cfg);
-
-		UART_TxCmd(LPC_UART0, ENABLE);
-	}
-
-	void
-	write(char c) {
-		while (!(LPC_UART0->LSR & UART_LSR_THRE)) {
-		}
-
-		UART_SendByte(LPC_UART0, c);
-	};
-
-	void
-	flush(){};
-
-	/// Read a single character
-	bool read(char& c) {
-		if((LPC_UART0->LSR & 1)) {
-			c = (LPC_UART0->RBR & UART_RBR_MASKBIT);
-			return true;
-		}
-		return false;
-	}
-};
 
 //#define _DEBUG
 #define _SER_DEBUG
 
-UARTDevice uart(460800);
+BufferedUart<Uart0> uart(460800, 128, 128);
+xpcc::IODeviceWrapper<Uart0> uart0raw;
 
 USBSerial device(0xffff);
 xpcc::IOStream stream(device);
@@ -99,6 +43,8 @@ xpcc::log::Logger xpcc::log::debug(device);
 #ifdef _SER_DEBUG
 xpcc::log::Logger xpcc::log::info(uart);
 xpcc::log::Logger xpcc::log::debug(uart);
+xpcc::log::Logger xpcc::log::error(uart0raw);
+xpcc::log::Logger xpcc::log::warning(uart);
 #else
 xpcc::log::Logger xpcc::log::info(null);
 xpcc::log::Logger xpcc::log::debug(null);
@@ -268,61 +214,8 @@ protected:
 
 };
 
-
 Stepper stepper;
 
-void boot_jump( uint32_t address ){
-   __asm("LDR SP, [R0]\n"
-   "LDR PC, [R0, #4]");
-}
-
-
-xpcc::NullIODevice null;
-
-xpcc::log::Logger xpcc::log::error(null);
-
-enum { r0, r1, r2, r3, r12, lr, pc, psr};
-
-extern "C" void HardFault_Handler(void)
-{
-  asm volatile("MRS r0, MSP;"
-		       "B Hard_Fault_Handler");
-}
-extern "C" void UsageFault_Handler(void)
-{
-  asm volatile("MRS r0, MSP;"
-		       "B Hard_Fault_Handler");
-}
-extern "C" void BusFault_Handler(void)
-{
-  asm volatile("MRS r0, MSP;"
-		       "B Hard_Fault_Handler");
-}
-
-extern "C"
-void Hard_Fault_Handler(uint32_t stack[]) {
-
-	//register uint32_t* stack = (uint32_t*)__get_MSP();
-
-	XPCC_LOG_DEBUG .printf("Hard Fault\n");
-
-	XPCC_LOG_DEBUG .printf("r0  = 0x%08x\n", stack[r0]);
-	XPCC_LOG_DEBUG .printf("r1  = 0x%08x\n", stack[r1]);
-	XPCC_LOG_DEBUG .printf("r2  = 0x%08x\n", stack[r2]);
-	XPCC_LOG_DEBUG .printf("r3  = 0x%08x\n", stack[r3]);
-	XPCC_LOG_DEBUG .printf("r12 = 0x%08x\n", stack[r12]);
-	XPCC_LOG_DEBUG .printf("lr  = 0x%08x\n", stack[lr]);
-	XPCC_LOG_DEBUG .printf("pc  = 0x%08x\n", stack[pc]);
-	XPCC_LOG_DEBUG .printf("psr = 0x%08x\n", stack[psr]);
-
-
-	while(1) {
-		if(!progPin::read()) {
-			for(int i = 0; i < 10000; i++) {}
-			NVIC_SystemReset();
-		}
-	}
-}
 
 void sysTick() {
 
@@ -436,7 +329,15 @@ public:
 		return !cfgTimeout.isActive() && locked && started;
 	}
 
-	void handleTick() {
+	void handleInit() override {
+
+		GpioInt::attach(photoDiode1::Port, photoDiode1::Pin,
+				[this](){ this->endDetectInt();},
+				IntEdge::RISING_EDGE);
+
+	}
+
+	void handleTick() override {
 		if(!mirrorMotor.isLocked()) {
 			laser.enable(false);
 			locked = false;
@@ -451,7 +352,7 @@ public:
 
 			startTime = 0;
 
-			GpioInterrupt::enableInterrupt(photoDiode1::Port, photoDiode1::Pin);
+			GpioInt::enableInterrupt(photoDiode1::Port, photoDiode1::Pin);
 		}
 
 		if(cfgTimeout.isActive() && cfgTimeout.isExpired() && locked) {
@@ -475,9 +376,6 @@ public:
 			//laser.enable(false);
 		}
 
-		if(laser.outputComplete()) {
-
-		}
 	}
 
 	void handleInterrupt(int irqn) {
@@ -488,7 +386,7 @@ public:
 				laser.enable(true);
 
 	            if(numItems) {
-	            	laser.outputData(data, numItems);
+	            	laser.setOutputData(data, numItems);
 	            }
 	            dbgPin::reset();
 			}
@@ -509,7 +407,7 @@ public:
 		laser.enable(false);
 		Timer1::enable(false);
 
-		GpioInterrupt::enableGlobalInterrupts();
+		GpioInt::enableInterrupts();
 	}
 
 	void scanLine(uint16_t* data, uint16_t len) {
@@ -524,7 +422,7 @@ public:
 		if(bitIndex)
 			index++;
 
-		//XPCC_LOG_DEBUG .printf("num %d\n", index);
+		XPCC_LOG_DEBUG .printf("count %d\n", index);
 		numItems = index;
 		currentScan = 0;
 	}
@@ -543,19 +441,6 @@ public:
 	}
 
 	uint32_t currentDelay;
-
-	void enableGpioInt() {
-		GpioInterrupt::enableInterrupt(photoDiode1::Port, photoDiode1::Pin);
-	}
-
-	void disableGpioInt() {
-		GpioInterrupt::disableInterrupt(photoDiode1::Port, photoDiode1::Pin);
-	}
-
-	void clearGpioInt() {
-		GpioInterrupt::checkInterrupt(EINT3_IRQn, photoDiode1::Port,
-				photoDiode1::Pin, IntEvent::RISING_EDGE);
-	}
 
 	uint32_t startTime;
 	//uint32_t scanPeriod;
@@ -670,11 +555,11 @@ protected:
 	bool readWord(uint16_t &v) {
 		Timeout<> t(10);
 
-		char a = 0;
-		char b = 0;
+		int16_t a = 0;
+		int16_t b = 0;
 
-		while(!device.read(a) && !t.isExpired());
-		while(!device.read(b) && !t.isExpired());
+		while((a = device.read()) < 0 && !t.isExpired());
+		while((b = device.read()) < 0 && !t.isExpired());
 
 		if(t.isExpired()) {
 			XPCC_LOG_DEBUG .printf("read timeout\n");
@@ -743,7 +628,7 @@ protected:
 
 		if(cmp(argv[0], "start")) {
 			if(nargs == 2) {
-				int freq = to_int(argv[1]);
+				int freq = atol(argv[1]);
 				controller.start(freq);
 			} else {
 				controller.start();
@@ -760,7 +645,7 @@ protected:
 				mirrorMotor.enable(false);
 			}
 			if(cmp(argv[1], "freq")) {
-				int speed = to_int(argv[2]);
+				int speed = atol(argv[2]);
 				XPCC_LOG_DEBUG .printf("Set freq %d\n", speed);
 				mirrorMotor.setClk(speed);
 			}
@@ -768,7 +653,7 @@ protected:
 
 		if(cmp(argv[0], "laser")) {
 			if(cmp(argv[1], "power")) {
-				int power = to_int(argv[2]);
+				int power = atol(argv[2]);
 				XPCC_LOG_DEBUG .printf("Set power %d\n", power);
 				if(power > 0 && power < 200) {
 					laser.setOutput(power);
@@ -779,15 +664,16 @@ protected:
 			}else
 			if(cmp(argv[1], "off")) {
 				laser.enable(false);
-			}else
-			if(cmp(argv[1], "focus")) {
-				int steps = to_int(argv[2]);
-				laser.setFocus(steps);
-				XPCC_LOG_DEBUG .printf("focus %d\n", steps);
 			}
+//			else
+//			if(cmp(argv[1], "focus")) {
+//				int steps = atol(argv[2]);
+//				laser.setFocus(steps);
+//				XPCC_LOG_DEBUG .printf("focus %d\n", steps);
+//			}
 		}
 		if(cmp(argv[0], "numscans")) {
-			controller.numScans = to_int(argv[1]);
+			controller.numScans = atol(argv[1]);
 		}
 		if(cmp(argv[0], "clear")) {
 			laser.enable(false);
@@ -813,14 +699,14 @@ protected:
 			while(1);
 		}
 		if(cmp(argv[0], "stepper") && cmp(argv[1], "autoinc")) {
-			autoincrement = to_int(argv[2]);
+			autoincrement = atol(argv[2]);
 		} else
 		if(cmp(argv[0], "stepper") && cmp(argv[1], "speed")) {
-			int a = to_int(argv[2]);
+			int a = atol(argv[2]);
 			stepper.setSpeed(a);
 		} else
 		if(cmp(argv[0], "stepper") && cmp(argv[1], "move")) {
-			int a = to_int(argv[2]);
+			int a = atol(argv[2]);
 			stepper.moveTo(a);
 		} else
 		if(cmp(argv[0], "stepper") && cmp(argv[1], "+")) {
@@ -841,28 +727,16 @@ protected:
 			stream.printf("%d\n", stepper.isBusy());
 		}
 	}
-
 };
 
 CmdTerminal cmd(device);
 CmdTerminal ucmd(uart);
 
-extern "C"
-void EINT3_IRQHandler() {
-
-	if (GpioInterrupt::checkInterrupt(EINT3_IRQn, photoDiode1::Port,
-			photoDiode1::Pin, IntEvent::RISING_EDGE)) {
-		controller.endDetectInt();
-
-		//clear any interrupts
-		GpioInterrupt::checkInterrupt(EINT3_IRQn, photoDiode1::Port,
-			photoDiode1::Pin, IntEvent::RISING_EDGE);
-	}
-
-}
-
-
 int main() {
+	//set uart0 pins
+	Pinsel::setFunc(0, 2, 1);
+	Pinsel::setFunc(0, 3, 1);
+
 	//debugIrq = true;
 	dbgPin::setOutput(1);
 	photoDiode2::setOutput(true);

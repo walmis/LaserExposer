@@ -25,7 +25,7 @@ GPIO__OUTPUT(laserEn, 0, 18);
 #warning "Broken pin Workaround enabled"
 GPIO__OUTPUT(laserCs, 0, 1);
 GPIO__OUTPUT(laserSck, 0, 10);
-GPIO__OUTPUT(laserData, 0, 11);
+GPIO__OUTPUT(laserData, 0, 26);
 
 //GPIO__OUTPUT(laserCs, 1, 19);
 //GPIO__OUTPUT(laserSck, 1, 20);
@@ -52,6 +52,6 @@ GPIO__OUTPUT(stepper2A, 2, 3);
 GPIO__OUTPUT(stepper2B, 2, 2);
 
 
-typedef gpio::Nibble<stepper1A, stepper1B, stepper2A, stepper2B> stepperOutputs;
+typedef xpcc::gpio::Nibble<stepper1A, stepper1B, stepper2A, stepper2B> stepperOutputs;
 
 #endif /* PINDEFS_HPP_ */
